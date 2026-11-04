@@ -1,0 +1,5 @@
+displayName = AgentIO
+author = 01Labs
+version = 0.1
+includeSource = true
+buildIgnore = *.csproj, *.user, *.sh, *.md, .git*, .DS_Store, obj\*, bin\*
