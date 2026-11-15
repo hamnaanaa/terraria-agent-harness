@@ -45,7 +45,9 @@ def begin(goal, state):
     if goal["kind"] == "defeat":
         return target_kills(state, goal)
     if goal["kind"] == "interact":
-        return quantity(state, goal["item"]) if goal["operation"] == "craft" else state["progress"]["life_max_perm"]
+        if goal["operation"] == "craft" or goal["operation"] == "use" and "consume" in goal:
+            return quantity(state, goal["item"])
+        return state["progress"]["life_max_perm"]
     return state["tick"]
 
 
@@ -98,6 +100,13 @@ def measure(goal, state, world, baseline, estimate=None, forecast=None):
                             else state["body"]["chest"] != goal["chest_id"])
         elif operation == "life_crystal":
             remaining = int(state["progress"]["life_max_perm"] <= baseline)
+        elif operation == "use":
+            if "consume" in goal:
+                remaining = max(0, goal["consume"] + quantity(state, goal["item"]) - baseline)
+            else:
+                owner = state["body"].get("player_id", 0)
+                remaining = max(0, goal.get("count", 1) - sum(
+                    s["id"] == goal["projectile"] and s.get("owner") == owner for s in state["shots"]))
         else:
             raise ValueError(f"unknown interaction {operation}")
     else:

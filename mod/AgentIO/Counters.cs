@@ -191,6 +191,12 @@ namespace AgentIO
 
 	public class CountHits : GlobalNPC
 	{
+		public override void OnKill(NPC npc)
+		{
+			int player = Main.myPlayer;
+			if (player >= 0 && player < Main.maxPlayers &&
+				(npc.lastInteraction == player || npc.playerInteraction[player])) Counters.Killed(npc);
+		}
 		public override void OnHitByProjectile(NPC npc, Projectile projectile, NPC.HitInfo hit, int damageDone)
 		{
 			if (projectile.owner != Main.myPlayer) return;
@@ -200,7 +206,6 @@ namespace AgentIO
 			if (shot.Weapon.Melee) Counters.MeleeHits++;
 			shot.Hit(damageDone);
 			Counters.DamageDealt += damageDone;
-			if (npc.life <= 0) Counters.Killed(npc);
 		}
 
 		public override void OnHitByItem(NPC npc, Player player, Item item, NPC.HitInfo hit, int damageDone)
@@ -210,7 +215,6 @@ namespace AgentIO
 			var weapon = Counters.Get(Counters.Weapons, item.type, item.Name);
 			Counters.WeaponHit(weapon, Counters.CurrentAttack?.Weapon == weapon ? Counters.CurrentAttack : null, damageDone);
 			Counters.DamageDealt += damageDone;
-			if (npc.life <= 0) Counters.Killed(npc);
 		}
 	}
 

@@ -1,0 +1,104 @@
+{
+  "world": "FirstLight",
+  "box": [
+    1787,
+    180,
+    1878,
+    230
+  ],
+  "approach": {
+    "tick": 3866,
+    "body": {
+      "x": 29163.994,
+      "y": 3302,
+      "vx": -2.6199992,
+      "vy": 0,
+      "life": 87,
+      "breath": 200
+    },
+    "enemy": {
+      "name": "Vulture",
+      "x": 29164.125,
+      "y": 3207.4507,
+      "vx": -2.5499997,
+      "vy": 3,
+      "life": 37,
+      "timers": [
+        1,
+        0,
+        0,
+        0
+      ]
+    },
+    "bag": [
+      [
+        "Copper Shortsword",
+        1,
+        0
+      ],
+      [
+        "Copper Pickaxe",
+        1,
+        1
+      ],
+      [
+        "Copper Axe",
+        1,
+        2
+      ],
+      [
+        "Wood",
+        28,
+        3
+      ],
+      [
+        "Wooden Sword",
+        1,
+        4
+      ],
+      [
+        "Torch",
+        12,
+        5
+      ],
+      [
+        "Acorn",
+        8,
+        6
+      ],
+      [
+        "Lead Ore",
+        6,
+        7
+      ],
+      [
+        "Wood Platform",
+        43,
+        8
+      ],
+      [
+        "Tin Ore",
+        2,
+        9
+      ],
+      [
+        "Dirt Block",
+        5,
+        48
+      ],
+      [
+        "Gel",
+        2,
+        49
+      ],
+      [
+        "Copper Coin",
+        4,
+        53
+      ]
+    ],
+    "wear": [
+      "Wood Helmet"
+    ]
+  }
+}

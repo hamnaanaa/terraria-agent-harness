@@ -17,10 +17,12 @@ EPISODES = {
 from combat.extended import EPISODES as COMBAT_EXTENDED, WEAPON_EPISODES
 from items.extended import EPISODES as ITEMS_EXTENDED
 from travel.extended import EPISODES as TRAVEL_EXTENDED
+from travel.light import EPISODES as LIGHT
 
 EXTENDED = {
     **{("cave_tunnel" if name == "cave" else name): episode for name, episode in TRAVEL_EXTENDED.items()},
     **COMBAT_EXTENDED,
     **ITEMS_EXTENDED,
     **WEAPON_EPISODES,
+    **LIGHT,
 }

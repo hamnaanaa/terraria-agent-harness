@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from episodes import EPISODES, EXTENDED
 from support import setup
+sys.path.insert(0, str(ROOT / "gym" / "episodes"))
+from recorded import EPISODES as RECORDED, LAKE, VULTURE
 sys.path.insert(0, str(ROOT / "live-brain"))
 from loop import Loop
 from mod import client
@@ -29,13 +31,19 @@ def show(title, text, result=None):
 
 
 def run_episode(name, folder, draw, heading=None):
-    episode = (EPISODES | EXTENDED)[name]
+    episode = (EPISODES | EXTENDED | RECORDED)[name]
     if heading:
         show(heading, episode["text"])
         time.sleep(2)
-    setup(episode)
+    if "setup" in episode:
+        episode["setup"]()
+    else:
+        setup(episode)
     episode_label = f"{heading} · {episode['text']}" if heading else episode["text"]
     brain = Loop(draw=draw, world_name="Gym")
+    if "memory" in episode:
+        brain.session = brain.read()["session"]["loaded"]
+        brain.world.update(episode["memory"])
     results, samples, misses, starts = [], {}, 0, {}
     path = folder / (name + ".jsonl")
     with path.open("x") as log:
@@ -56,7 +64,10 @@ def run_episode(name, folder, draw, heading=None):
                 samples.setdefault("round", []).append(row["round_ms"])
                 samples.setdefault("record", []).append(row["record_ms"])
 
-        record({"type": "episode", "name": name, "description": episode["text"]})
+        record({"type": "episode", "name": name, "description": episode["text"],
+                **({"source": episode["source"]} if "source" in episode else {})})
+        if "memory" in episode:
+            record({"type": "memory", "cells": episode["memory"]})
         initial = None
         for step in episode["goals"]():
             before = brain.read()
@@ -70,8 +81,14 @@ def run_episode(name, folder, draw, heading=None):
                 try:
                     ack = client.call(endpoint, payload, timeout=5)
                     after = brain.read()
-                    verified = verify(before, after)
-                    result = {"status": "done", "reason": "observed inventory changes", "ack": ack}
+                    if endpoint == "/run":
+                        record({"type": "probe", "trace": ack["trace"]})
+                        evidence = verify(before, ack["trace"])
+                        verified = evidence["verified"]
+                        result = dict(status="done" if verified else "failed", **evidence)
+                    else:
+                        verified = verify(before, after)
+                        result = {"status": "done", "reason": "observed inventory changes", "ack": ack}
                 except (RuntimeError, OSError) as error:
                     after = brain.read()
                     verified = False
@@ -111,7 +128,11 @@ def run_episode(name, folder, draw, heading=None):
                 else:
                     verified = False
             else:
-                result = brain.run(goal, record, episode_label)
+                options = {}
+                if goal.get("waiting"):
+                    options = dict(next_goal=lambda: None, stop_waiting=lambda state:
+                                   state["tick"] - before["tick"] >= goal["limit_ticks"])
+                result = brain.run(goal, record, episode_label, **options)
                 after = brain.read()
                 verified = verify(verify_from, after)
             expected = goal.get("expected", "done")
@@ -133,13 +154,14 @@ def main():
     parser.add_argument("--no-overlay", action="store_true")
     parser.add_argument("--watch", action="store_true", help="show each test title and result for two seconds")
     args = parser.parse_args()
-    catalog = EPISODES | EXTENDED
+    catalog = EPISODES | EXTENDED | RECORDED
     numbers = {name: index for index, name in enumerate(catalog, 1)}
     if args.list or not args.episodes:
         for name, episode in catalog.items():
             print(f"{numbers[name]:02d}  {name:24s} {episode['text']}")
         return 0
-    suites = {"regular": EPISODES, "extended": EXTENDED, "all": catalog}
+    suites = {"regular": EPISODES, "extended": EXTENDED, "all": EPISODES | EXTENDED,
+              "recorded": RECORDED, "lake": LAKE, "vulture": VULTURE}
     names = list(suites[args.episodes[0]]) if len(args.episodes) == 1 and args.episodes[0] in suites else args.episodes
     by_number = {f"{index:02d}": name for name, index in numbers.items()}
     names = [by_number.get(name.zfill(2), name) for name in names]

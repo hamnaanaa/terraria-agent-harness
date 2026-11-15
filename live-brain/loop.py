@@ -16,6 +16,7 @@ from map import Map
 import overlay
 import pathfinder
 from rules.body import cells_of
+from rules.projectiles import observe_shapes
 
 fast = importlib.import_module("fast-brain")
 REVIEW_SECONDS = fast.REVIEW_TICKS / 60
@@ -63,6 +64,9 @@ def destination(goal, state, world):
     return None, None, False
 
 
+from rules.motion import observe as observe_motion
+
+
 class Loop:
     def __init__(self, io=client, draw=True, world_name=None):
         self.io = io
@@ -72,7 +76,7 @@ class Loop:
         self.session = None
 
     def read(self):
-        return self.io.call("/state?w=90&h=50", timeout=4)
+        return self.io.call("/state?w=90&h=50&attack_shapes=1&shape_step=16", timeout=4)
 
     def run(self, goal, record, episode=None, *, next_goal=None, on_result=None, stop_waiting=None):
         """Run one goal, or stay active when a caller supplies a goal source."""
@@ -82,9 +86,10 @@ class Loop:
             raise ValueError("expected a known goal and positive limit_ticks")
         goal_id = uuid4().hex
         plan = signature = baseline = first = previous = None
+        air_route = air_signature = None
         expected = None
         commands = {}
-        decision_seconds = 0.08
+        send_seconds = 1 / 60
         round_no = 0
         first_round = 1
         goal_started = time.monotonic()
@@ -98,6 +103,9 @@ class Loop:
                 round_no += 1
                 with timing.span("state.read"):
                     state = self.read()
+                if state.get("attack_shapes"):
+                    with timing.span("attack_shapes.observe"):
+                        state = observe_shapes(state)
                 with timing.span("session.check"):
                     session = state["session"]["loaded"]
                     if self.world_name is not None and state["world_name"] != self.world_name:
@@ -114,6 +122,8 @@ class Loop:
                     if round_no == 1 and (state["execution"]["active"] or state["execution"]["pending"]):
                         own = False
                         raise RuntimeError("AgentIO already has an active controller")
+                with timing.span("motion.observe"):
+                    state = observe_motion(state)
                 with timing.span("goal.select"):
                     if goal is None or goal.get("waiting"):
                         incoming = next_goal()
@@ -131,6 +141,11 @@ class Loop:
                             record({"type": "goal", "goal": goal, "state": state})
                 with timing.span("map.update"):
                     changes = self.world.update(state["cells"])
+                    if air_route:
+                        grid = air_route.grid
+                        if any(grid.x0 <= x < grid.x0 + grid.w and grid.y0 <= y < grid.y0 + grid.h
+                               for x, y in changes):
+                            air_signature = None
                 with timing.span("effects.observe"):
                     execution = state["execution"]
                     if first is None:
@@ -146,17 +161,15 @@ class Loop:
                     previous = state
                 with timing.span("goal.check"):
                     check = goals.check(goal, state, self.world, baseline, first["tick"])
-                    if not goal.get("waiting") and time.monotonic() - goal_started > goal["limit_ticks"] / 60 + 30:
+                    if not check and not goal.get("waiting") and time.monotonic() - goal_started > goal["limit_ticks"] / 60 + 30:
                         check = "failed", "game clock stopped or ran too slowly"
                     if not check and goal.get("waiting") and stop_waiting and stop_waiting(state):
                         check = "stopped", "waiting period ended"
                     finished = execution.get("finished")
-                    if expected and not any(e and e["command_id"] == expected for e in execution.values()):
+                    if not check and expected and not any(e and e["command_id"] == expected for e in execution.values()):
                         check = "failed", "the mod lost the last command"
                     if finished and finished["command_id"] == expected and finished["status"] != "finished":
                         check = check or ("failed", "command " + finished["status"])
-                if any(e.get("boss") for e in state["enemies"]):
-                    check = check or ("unsupported", "boss movement model has not been validated")
                 decision = {}
                 ack = None
                 measurement = None
@@ -175,9 +188,25 @@ class Loop:
                         body = state["body"]
                         off_route = plan and body["ground"] and plan.at(*plan.node_of(body)) is None
                         wet_head = pathfinder.head_underwater(self.world, body)
+                        box = state["cells"]
+                        water_near = not phys.get("gills") and (wet_head or any(
+                            amount and kind == 0 and seen
+                            for amounts, kinds, visibility in zip(box["liquid"], box["liquid_kind"], box["seen"])
+                            for amount, kind, seen in zip(amounts, kinds, visibility)))
+                        keep = goal.get("protect", ())
+                        air_key = (relevant, phys, keep)
                         air_replan = plan and (plan.dry and not wet_head or
                             not plan.dry and wet_head and not phys.get("gills") and
                             pathfinder.air_needed(plan, body) >= body["breath"] * pathfinder.AIR_TICKS_PER_POINT)
+                    if water_near:
+                        x, _, _, y = cells_of(body)
+                        if (air_key != air_signature or abs(x - air_route.cell[0]) > 20
+                                or abs(y - air_route.cell[1]) > 12):
+                            with timing.span("pathfinder.air"):
+                                air_route = pathfinder.plan_to_air(self.world, body, kit, phys, keep)
+                            air_signature = air_key
+                    else:
+                        air_route = air_signature = None
                     if target is not None and (key != signature or off_route or air_replan):
                         replan = "no route" if signature is None else (
                             "destination changed" if key[:3] != signature[:3] else
@@ -185,7 +214,7 @@ class Loop:
                             "capabilities changed" if key[4:] != signature[4:] else "air budget changed" if air_replan else "outside route")
                         with timing.span("pathfinder.plan"):
                             plan = pathfinder.breathable_plan(self.world, target, body, kit, phys, area=area,
-                                                   approach=approach, keep=goal.get("protect", ()))
+                                                   approach=approach, keep=keep, air_route=air_route)
                             signature = key
                     if target is None:
                         plan = signature = None
@@ -193,8 +222,10 @@ class Loop:
                         measurement = goals.measure(goal, state, self.world, baseline, pathfinder.estimate(plan, body))
                     # Planning can run while the last script still holds the buttons. Schedule
                     # the replacement far enough ahead to forecast from its likely start.
-                    elapsed = timing.now() - timing.start
-                    lead = max(2, int((elapsed + decision_seconds) * 60) + 2)
+                    # Use the review interval as the planning window. Adapting
+                    # it to the previous compute time shrank both search and
+                    # its next budget until only a few options were considered.
+                    lead = fast.REVIEW_TICKS
                     start_tick = state["tick"] + lead
                     active = execution["active"]
                     active_steps = commands.get(active["command_id"], []) if active else []
@@ -202,11 +233,16 @@ class Loop:
                     with timing.span("fast.project"):
                         projected = fast.project(state, self.world, lead, active_steps, applied_tick)
                     continuing = fast.pressed_ticks(active_steps)[max(0, start_tick - applied_tick + 1):]
-                    compute = timing.now()
+                    # The scheduled handoff, not just the review interval, limits
+                    # thinking time. Reserve the measured send time and a game tick.
+                    cutoff = timing.start + (lead - 1) / 60
+                    deadline = min(timing.start + REVIEW_SECONDS, cutoff - send_seconds)
                     decision = fast.decide(projected, self.world, goal, baseline, plan, target, timing,
-                                           timing.start + REVIEW_SECONDS, continuing=continuing, observed_body=body)
-                    decision_seconds = max(0.04, (timing.now() - compute) * 1.25)
+                                           deadline, continuing=continuing, observed_body=body,
+                                           air_route=air_route, reaction_ticks=lead + fast.REVIEW_TICKS)
                     decision["forecast_start_tick"] = start_tick
+                    decision["evaluation_deadline_ms"] = round((deadline - timing.start) * 1000, 3)
+                    sent = timing.now()
                     with timing.span("command.submit"):
                         if "endpoint" in decision:
                             if active:
@@ -217,18 +253,20 @@ class Loop:
                                 check = ("failed", ack["stopped"])
                         elif "steps" in decision:
                             ticks = sum(step["ticks"] for step in decision["steps"])
-                            # A late decision was forecast from the wrong body position.
-                            if active and (timing.now() - timing.start) * 60 + 1 >= lead:
-                                decision["submission"] = "kept current command because the new forecast was late"
+                            command_id = f"{goal_id}:{round_no}"
+                            ack = self.io.call("/run", {
+                                "steps": decision["steps"], "replace": True, "wait": False,
+                                "start_tick": start_tick,
+                                "command_id": command_id, "goal": goal_id, "session": session,
+                                "expiry_tick": start_tick + ticks + fast.REVIEW_TICKS,
+                            }, timeout=4)
+                            if ack.get("accepted") is False:
+                                decision["submission"] = "kept current command because the game tick was missed"
                             else:
-                                expected = f"{goal_id}:{round_no}"
+                                expected = command_id
                                 commands = {expected: decision["steps"], **({active["command_id"]: active_steps} if active else {})}
-                                ack = self.io.call("/run", {
-                                    "steps": decision["steps"], "replace": True, "wait": False,
-                                    "start_tick": start_tick,
-                                    "command_id": expected, "goal": goal_id, "session": session,
-                                    "expiry_tick": start_tick + ticks + fast.REVIEW_TICKS,
-                                }, timeout=4)
+                    if ack:
+                        send_seconds = max(1 / 60, timing.now() - sent)
                     deadline_missed = timing.now() - timing.start > REVIEW_SECONDS
                     if self.draw:
                         with timing.span("overlay.build"):
@@ -240,8 +278,10 @@ class Loop:
                                 decision["overlay_error"] = str(error)
                 with timing.span("wait"):
                     if not check:
-                        if ack and "steps" in decision:
-                            delay = (max(0, start_tick - ack["now"]) + min(ticks, fast.REVIEW_TICKS)) / 60
+                        if ack and ack.get("accepted") is False:
+                            delay = 0  # Take a fresh state after a game-clock rejection.
+                        elif ack and "steps" in decision:
+                            delay = max(0, min(ticks, fast.REVIEW_TICKS) / 60 - (timing.now() - timing.start))
                         elif busy:
                             delay = 1 / 60 if execution["pending"] else min(fast.REVIEW_TICKS / 60, max(1 / 60, REVIEW_SECONDS - (timing.now() - timing.start)))
                         else:
@@ -249,6 +289,7 @@ class Loop:
                         time.sleep(delay)
                 with timing.span("record.prepare"):
                     effects["life"] = state["body"]["life"]
+                    effects["light"] = state.get("light")
                     effects["cells"] = [[*cell, after[0], after[3], after[4]] for cell, (_, after) in changes.items()]
                     effects["bag"] = [[i["name"], i["stack"]] for i in state["bag"]]
                     route = {"ticks": plan.ticks, "frontier": plan.explore, "refresh": replan, "air_detour": plan.dry} if plan else None

@@ -11,7 +11,7 @@ namespace AgentIO
 	{
 		public sealed class Press
 		{
-			public bool Left, Right, Up, Down, Jump, Use, Interact, Hook;
+			public bool Left, Right, Up, Down, Jump, Use, Interact, Hook, Throw;
 			public int Slot = -1;
 			public float AimX = float.NaN, AimY = float.NaN;    // world px
 			public bool Fresh = true;                            // not yet applied: a new press
@@ -56,7 +56,8 @@ namespace AgentIO
 						case "use": p.Use = true; break;
 						case "interact": p.Interact = true; break;    // the right click: doors, chests, town folk
 						case "hook": p.Hook = true; break;            // the grapple key: the first hook in the bag flies at the aim
-						default: throw new System.ArgumentException("no key " + k.GetString() + " (left, right, up, down, jump, use, interact, hook)");
+						case "throw": p.Throw = true; break;
+						default: throw new System.ArgumentException("no key " + k.GetString() + " (left, right, up, down, jump, use, interact, hook, throw)");
 					}
 			if (e.TryGetProperty("slot", out var s)) p.Slot = s.GetInt32();
 			if (e.TryGetProperty("aim_cell", out var c))
@@ -91,10 +92,11 @@ namespace AgentIO
 			// never drunk (Oct 18 night)
 			bool switching = press.Slot >= 0 && press.Slot < 10 && Player.selectedItem != press.Slot;
 			if (switching && Player.itemAnimation == 0) { Player.selectedItem = press.Slot; switching = false; }
+			Player.controlThrow = press.Throw && !switching;   // the game's own hotbar drop
 			// «use» held: an item with autoReuse (a pickaxe, a sword in 1.4.4) fires on its own; one without (a bow, a
 			// potion, a block) needs the key up for a tick between uses, so the key is pressed on alternate ticks
 			bool use = press.Use && !switching;
-			if (use && !Player.HeldItem.autoReuse && _useDown) use = false;
+			if (use && !Player.HeldItem.autoReuse && !Player.HeldItem.channel && _useDown) use = false;
 			Player.controlUseItem = use;
 			_useDown = use;
 			// interact fires on a fresh press too: pressed on alternate ticks
@@ -121,11 +123,6 @@ namespace AgentIO
 				Player.delayUseItem = false;            // the cursor over the bag or a button would swallow the use
 				Player.mouseInterface = false;
 			}
-		}
-
-		public override void PostUpdate()
-		{
-			if (Player.whoAmI == Main.myPlayer) Script.AfterTick(Player);
 		}
 	}
 }

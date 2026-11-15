@@ -1,0 +1,266 @@
+{
+  "world": "FirstLight",
+  "box": [
+    2147,
+    198,
+    2178,
+    258
+  ],
+  "escape": {
+    "tick": 16110,
+    "body": {
+      "player_id": 0,
+      "selected": 0,
+      "x": 34584.664,
+      "y": 3734,
+      "w": 20,
+      "h": 42,
+      "vx": 0,
+      "vy": 0,
+      "dir": -1,
+      "ground": true,
+      "wet": false,
+      "lava": false,
+      "honey": false,
+      "rope": false,
+      "wing_time": 0,
+      "hooked": false,
+      "hook": null,
+      "life": 100,
+      "life_max": 100,
+      "breath": 200,
+      "life_regen": 4,
+      "life_regen_count": 104,
+      "mana": 20,
+      "mana_max": 20,
+      "no_knockback": false,
+      "long_invince": false,
+      "damage_reduction": 0,
+      "gravity_dir": 1,
+      "height_offset": 0,
+      "solar_set": false,
+      "solar_shields": 0,
+      "beetle_defense": false,
+      "beetle_orbs": 0,
+      "cart": false,
+      "hurt_cooldowns": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "defense": 3,
+      "defense_eff": 0.5,
+      "jump": 0,
+      "fall_start": 233,
+      "immune": false,
+      "immune_time": 0,
+      "potion_delay": 0,
+      "item_animation": 0,
+      "item_animation_max": 20,
+      "item_time": 0,
+      "held_item": 1304,
+      "attack_cooldown": 0,
+      "channel": false,
+      "mana_regen_delay": 0,
+      "minion_slots": 0,
+      "max_minions": 1,
+      "max_sentries": 1,
+      "whip_range": 1,
+      "arm_offset": [
+        18,
+        31
+      ],
+      "dead": false,
+      "chest": -1
+    },
+    "bag": [
+      [
+        "Zombie Arm",
+        1,
+        0
+      ],
+      [
+        "Copper Pickaxe",
+        1,
+        1
+      ],
+      [
+        "Copper Axe",
+        1,
+        2
+      ],
+      [
+        "Wood",
+        15,
+        3
+      ],
+      [
+        "Copper Shortsword",
+        1,
+        4
+      ],
+      [
+        "Wooden Sword",
+        1,
+        5
+      ],
+      [
+        "Torch",
+        118,
+        6
+      ],
+      [
+        "Dirt Block",
+        70,
+        7
+      ],
+      [
+        "Wood Platform",
+        42,
+        8
+      ],
+      [
+        "Wooden Boomerang",
+        1,
+        9
+      ],
+      [
+        "Wooden Bow",
+        1,
+        17
+      ],
+      [
+        "Stone Block",
+        12,
+        30
+      ],
+      [
+        "Mushroom",
+        1,
+        31
+      ],
+      [
+        "Tombstone",
+        1,
+        32
+      ],
+      [
+        "Obelisk",
+        1,
+        33
+      ],
+      [
+        "Green Slime Banner",
+        1,
+        34
+      ],
+      [
+        "Lens",
+        2,
+        35
+      ],
+      [
+        "Cross Grave Marker",
+        2,
+        36
+      ],
+      [
+        "Grave Marker",
+        5,
+        37
+      ],
+      [
+        "Gel",
+        113,
+        38
+      ],
+      [
+        "Daybloom",
+        1,
+        39
+      ],
+      [
+        "Fallen Star",
+        5,
+        40
+      ],
+      [
+        "Recall Potion",
+        6,
+        41
+      ],
+      [
+        "Lead Bar",
+        3,
+        42
+      ],
+      [
+        "Vertebra",
+        2,
+        43
+      ],
+      [
+        "Glowstick",
+        58,
+        44
+      ],
+      [
+        "Spelunker Potion",
+        1,
+        45
+      ],
+      [
+        "Acorn",
+        15,
+        46
+      ],
+      [
+        "Deathweed Seeds",
+        2,
+        47
+      ],
+      [
+        "Deathweed",
+        1,
+        48
+      ],
+      [
+        "Living Wood Wand",
+        1,
+        49
+      ],
+      [
+        "Silver Coin",
+        16,
+        52
+      ],
+      [
+        "Copper Coin",
+        42,
+        53
+      ]
+    ],
+    "wear": [
+      "Wood Helmet",
+      "Wood Breastplate",
+      "Wood Greaves"
+    ],
+    "goal": {
+      "kind": "reach",
+      "area": [
+        2157,
+        201,
+        2164,
+        207
+      ],
+      "preserve": {
+        "Wood": 10
+      },
+      "limit_ticks": 2400,
+      "label": "Climb from the quarry back to its surface rim"
+    },
+    "observation": "observation"
+  }
+}

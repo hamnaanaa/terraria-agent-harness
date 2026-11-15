@@ -158,6 +158,10 @@ namespace AgentIO
 					return Json.Error("command session ended");
 				if (Main.GameUpdateCount >= run.Expiry || run.Expiry <= run.StartTick)
 					return Json.Error("command expired");
+				// Only the game's clock decides whether this forecast can still
+				// start where it predicted. Keep the running/pending command intact.
+				if (run.StartTick <= Main.GameUpdateCount)
+					return Json.Of(new { accepted = false, late = true, now = Main.GameUpdateCount });
 			}
 			DropPending("replaced");
 			run.Job = run.Wait ? job : new Server.Job();
@@ -233,6 +237,7 @@ namespace AgentIO
 
 		public static void AfterTick(Player p)
 		{
+			// After players, NPCs and projectiles: all entries describe the same completed game tick.
 			lock (Gate) AfterTickLocked(p);
 		}
 
@@ -256,7 +261,8 @@ namespace AgentIO
 			{
 				var n = Main.npc[i];
 				if (n == null || !n.active || n.friendly || n.townNPC) continue;
-				list.Add(new[] { i, n.position.X, n.position.Y, n.velocity.X, n.velocity.Y, n.life, n.ai[0], n.ai[1], n.ai[2], n.ai[3] });
+				list.Add(new[] { i, n.position.X, n.position.Y, n.velocity.X, n.velocity.Y, n.life, n.ai[0], n.ai[1], n.ai[2], n.ai[3],
+					n.localAI[0], n.localAI[1], n.localAI[2], n.localAI[3], n.direction, n.collideX ? 1f : 0f, n.collideY ? 1f : 0f });
 			}
 			return list;
 		}
@@ -268,7 +274,8 @@ namespace AgentIO
 			{
 				var s = Main.projectile[i];
 				if (s == null || !s.active) continue;
-				list.Add(new[] { i, s.position.X, s.position.Y, s.velocity.X, s.velocity.Y, s.type });
+				list.Add(new[] { i, s.position.X, s.position.Y, s.velocity.X, s.velocity.Y, s.type,
+					s.ai[0], s.ai[1], s.localAI[0], s.localAI[1], s.timeLeft, s.penetrate });
 			}
 			return list;
 		}
@@ -296,6 +303,7 @@ namespace AgentIO
 				["jump_hold"] = Player.jumpHeight, ["move_speed"] = p.moveSpeed, ["buffs"] = Buffs(p),
 				["acc_run"] = p.accRunSpeed, ["pick_speed"] = p.pickSpeed, ["tile_speed"] = p.tileSpeed,
 				["immune"] = p.immune, ["immune_time"] = p.immuneTime, ["dir"] = p.direction,
+				["life_regen"] = p.lifeRegen, ["life_regen_count"] = p.lifeRegenCount,
 				// every enemy and shot this tick, compact: [index, x, y, vx, vy, life] and [index, x, y, vx, vy]
 				["enemies"] = EnemyRows(), ["shots"] = ShotRows(),
 			};

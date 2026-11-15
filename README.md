@@ -6,17 +6,19 @@ This repo contains the pieces of a Terraria agent harness for real-time play and
 
 - [AgentIO](mod/AgentIO), the tModLoader mod that reads game state and sends controls to Terraria.
 - **Agent harness**. The [live brain](live-brain) handles real-time play by mapping terrain, finding routes, and simulating moves. The [slow brain](slow-brain) plans ahead and chooses the next goal.
-- [Gym](gym/live-brain), 67 numbered scenarios that check what the agent does in the game.
+- [Gym](gym/live-brain), 70 numbered scenarios that check what the agent does in the game.
 
 ![Terraria combat with the agent’s predicted moves drawn in the game](assets/gameplay.gif)
 
 [Watch the original gameplay clip on X](https://x.com/hamudinaanaa/status/2112038383291932896)
 
+[Watch the YouTube walkthrough](https://youtu.be/dGvCWJzEPVg)
+
 ## What’s here today
 
-The live brain can take a goal such as “reach this ledge” or “defeat this zombie” and play it out in the game. The Gym scenarios range from placing one block to looting a chest and getting back out of a cave. Each run records the agent’s decisions so we can see where it went wrong.
+The live brain can travel, mine, build, collect items, fight, craft and interact with doors and chests. The Gym includes 70 numbered scenarios, seven episodes copied from real play, and separate enemy and weapon tests. Runs record the state, candidate moves, chosen inputs and timings.
 
-The first boss milestone is the Eye of Cthulhu. The planner will have to figure out what gear to make, where to find the materials, and when to take the fight.
+This live brain has won prepared fights against the Eye of Cthulhu, Wall of Flesh and nighttime Empress of Light. We supplied the gear, arenas and goals for those fights. The slow brain is the next part to build; attended play currently uses goals chosen by an assistant.
 
 ## Set up AgentIO
 
@@ -41,9 +43,15 @@ python3 gym/live-brain/run.py --list
 python3 gym/live-brain/run.py --watch 65 66 67
 python3 gym/live-brain/run.py all
 python3 gym/live-brain/checks.py
+python3 gym/combat/weapons.py
+python3 gym/combat/observed_motion.py
 ```
 
-`regular` selects cases 1–12, `extended` selects 13–67, and `all` selects the full list. You can also pass names such as `ammo_fallback`. `--watch` displays the case number and result in the game. `--no-overlay` suppresses drawings. Each run writes its summary and per-case JSONL logs to `runs/`. The component checks in `checks.py` run without the game. Add `--gym` to also check command scheduling and cancellation against AgentIO in Gym.
+`regular` selects cases 1–12, `extended` selects 13–70, and `all` selects those 70 cases. `recorded` runs the [episodes copied from real playthroughs](gym/episodes). You can also pass names such as `ammo_fallback`. `--watch` displays the case number and result in the game. `--no-overlay` suppresses drawings. Each run writes its summary and per-case JSONL logs to `runs/`. The component checks in `checks.py` run without the game. Add `--gym` to also check command scheduling and cancellation against AgentIO in Gym.
+
+The [combat Gym](gym/combat) covers 18 common-enemy cases and 29 weapon cases, with individual case selection and optional recording. It also contains the collector used to compare scripted inputs with the live brain. These suites run separately from the 70 numbered scenarios.
+
+The loop plans replacement inputs 15 game ticks ahead, about 250 ms when the game runs at 60 ticks per second. It measures each step and shares repeated movement predictions within that round. AgentIO checks the actual game tick before accepting an input script.
 
 ## Give the live brain a goal
 
@@ -58,6 +66,14 @@ python3 live-brain/loop.py --world Gym goal.json
 ```
 
 The loop reads AgentIO, updates the map, asks Pathfinder for a route, and sends the move selected by the fast brain. It writes decisions and a final result to standard output. The Gym scenarios also show goal examples for terrain changes, item counts, combat, interactions, searches, and waiting.
+
+Consumables use an interaction goal, for example `{"kind":"interact","operation":"use","item":"Recall Potion","consume":1,"limit_ticks":180}`. Completion requires observing the item count decrease. Summon goals instead check for owned projectiles; see the [combat Gym](gym/combat).
+
+## Current limits
+
+- Enemy and hostile-projectile forecasts continue the motion visible in the current state. Sudden turns, launches and newly spawned attacks can still surprise the agent. The live brain requests the game's current projectile collision shapes in both Gym and ordinary worlds.
+- A combat goal currently leaves the fighting area unrestricted. The agent can leave an arena, and boss wins are still inconsistent. The prepared boss takes use local setup scripts; the public combat collector includes short boss probes.
+- Automatic inventory dropping, underwater lighting alternatives and returning to a journey after digging an air pocket still need work. Continuous beams and multi-shot weapons need more checks.
 
 ## Why
 

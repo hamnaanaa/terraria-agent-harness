@@ -25,11 +25,8 @@ HONEY = {"gravity": 0.1, "fall_top": 3.0, "move": 0.25}
 # away by 0.7 a tick; a side key moves it across the rope 0.6 px a tick, to 6 px past the rope's centre, never
 # off it; a jump lets go and jumps
 ROPE = {"acc": 0.2, "top": 3.0, "creep_up": 0.02, "creep_down": 0.1, "fade": 0.7, "slide": 0.6}
-# rule «wings» (gym, Oct 20, Fledgling Wings, wing_time_max 25): the push's last tick is the wings' first, at the push
-# speed and 0.1 more; each wing tick after takes 0.1 more off instead of gravity (25 of them); with the wings spent
-# and the key still held, a falling body falls at a third of gravity up to a third of fall_top (0.13 a tick, 3.34);
-# the wings fill up on the ground
-WINGS = {"acc": 0.1, "glide": 3.0, "holds": (60, 120, 220)}   # the jump key held this long: the flights tried
+# Player.WingMovement supplies the ascent parameters through AgentIO.
+WINGS = {"glide": 3.0, "holds": (60, 120, 220)}
 
 
 def span(lo, size):
@@ -56,6 +53,14 @@ def run(b, keys, phys):
     the speed saws: one tick over, braked, two ticks back up (the gym's run test, Oct 18)."""
     acc, top, slow = f32(phys["run_acc"]), f32(phys["run_top"]), f32(phys["run_slow"])
     boots = f32(phys.get("acc_run", phys["run_top"]))
+    winged = phys.get("wing_time_max", 0) > 0 and not b["wet"]
+    if winged:
+        mult = phys.get("wing_acc_mult", 1)
+        if phys.get("wing_air"):
+            acc = f32(acc / mult)
+        if not b["ground"]:
+            acc = f32(acc * mult)
+            boots = max(boots, f32(phys.get("wing_run_top", boots)))
     vx = b["vx"]
     if "left" in keys and vx > -top:
         if vx > slow:
@@ -65,10 +70,14 @@ def run(b, keys, phys):
         if vx < -slow:
             vx = f32(vx + slow)
         vx = f32(vx + acc)
-    elif "left" in keys and vx > -boots and b["ground"]:
-        vx = f32(vx - f32(acc * 0.2))       # boots: past run_top, a fifth of the push up to acc_run (gym: boots)
-    elif "right" in keys and vx < boots and b["ground"]:
+    elif "left" in keys and vx > -boots and (b["ground"] or winged):
+        vx = f32(vx - f32(acc * 0.2))
+        if winged:
+            vx = f32(vx - f32(acc * 0.2))
+    elif "right" in keys and vx < boots and (b["ground"] or winged):
         vx = f32(vx + f32(acc * 0.2))
+        if winged:
+            vx = f32(vx + f32(acc * 0.2))
     else:
         s = slow if b["ground"] else f32(slow * 0.5)
         vx = f32(vx - s) if vx > s else f32(vx + s) if vx < -s else 0.0
@@ -93,23 +102,36 @@ def jump(b, keys, phys):
                 b["jump"] -= 1
         elif b["jump"] == 1 and winged and b.get("wing", 0) > 0 and not b["ground"]:
             b["jump"] = 0                       # rule «wings»: the push's last tick is the wings' first: the push's
-            b["vy"] = f32(-speed - WINGS["acc"])   # speed and the wings' first 0.1, no gravity (gym, Oct 20)
-            b["wing"] -= 1
-            b["flying"] = True
+            b["vy"] = -f32(speed)
+            fly(b, phys, speed)
         elif b["ground"] and b["released"]:
             b["jump"] = hold
             b["vy"] = -f32(speed)
             b["released"] = False
             b["rope"] = False                   # a jump lets go of a rope
         elif not b["ground"] and b.get("wing", 0) > 0 and not b["released"]:
-            b["vy"] = f32(b["vy"] - WINGS["acc"])   # rule «wings»: the wings push, no gravity this tick
-            b["wing"] -= 1
-            b["flying"] = True
+            fly(b, phys, speed)
         else:
             b["released"] = False               # the press is spent in the air
     else:
         b["jump"] = 0
         b["released"] = True
+
+
+def fly(b, phys, speed):
+    """Player.WingMovement with the equipped wing's observed parameters.
+
+    Older recordings use the vanilla method's initial values. AgentIO records
+    final values at VerticalWingSpeeds when the real player first flies.
+    """
+    vy = f32(b["vy"] - f32(phys.get("wing_constant", .1)))
+    if vy > 0:
+        vy = f32(vy - f32(phys.get("wing_falling", .5)))
+    elif vy > f32(-speed * phys.get("wing_rise_limit", .5)):
+        vy = f32(vy - f32(phys.get("wing_rising", .1)))
+    b["vy"] = max(vy, f32(-speed * phys.get("wing_top", 1.5)))
+    b["wing"] -= 1
+    b["flying"] = True
 
 
 def gravity(b, phys, keys=()):
@@ -121,7 +143,9 @@ def gravity(b, phys, keys=()):
     g = WATER["gravity"] if b["wet"] else phys["gravity"]
     top = WATER["fall_top"] if b["wet"] else phys["fall_top"]
     if "jump" in keys and phys.get("wing_time_max", 0) > 0 and not b["wet"] and not b["ground"] and b["vy"] > 0:
-        g, top = g / WINGS["glide"], top / WINGS["glide"]      # the glide: a third of the fall
+        g = g / WINGS["glide"]
+        if "down" not in keys:
+            top = top / WINGS["glide"]
     b["vy"] = min(f32(b["vy"] + f32(g)), f32(top))
     b["g"] = f32(g)                     # the step down asks whether the fall speed is just this tick's gravity
 
@@ -148,7 +172,8 @@ def move(b, solid, floor, down=False):
             y, vy = float(top - H), 0.0
             b["vy"] = 0.0
     def holds(c, r):
-        return solid(c, r) or (floor(c, r) and not down)
+        # Collision.TileCollision: down passes platforms only at <=1 px/tick.
+        return solid(c, r) or (floor(c, r) and (not down or vy > 1))
 
     # rule «step» down: a body that stood last tick (its fall speed is just this tick's gravity), walking off a ledge
     # one row high, snaps onto the floor below in the same tick, if that floor's top is 7 to 17 px under its feet

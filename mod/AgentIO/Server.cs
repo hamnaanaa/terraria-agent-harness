@@ -93,6 +93,7 @@ namespace AgentIO
 
 		public override void PostUpdateEverything()
 		{
+			Script.AfterTick(Main.LocalPlayer);
 			Script.Watch();
 			while (Jobs.TryDequeue(out var job))
 			{
@@ -171,6 +172,8 @@ namespace AgentIO
 				case "/state": return OnGame(_ => State.Read(q), 3000);
 				case "/keys": return OnGame(_ => Keys.Hold(body), 3000);
 				case "/overlay": return Overlay.Set(body);       // pictures only: no game state is touched
+				case "/ghost": return OnGame(_ => Ghosts.Handle(body), 10000);    // the body recorded, then replayed as see-through copies
+				case "/camera": return OnGame(_ => Ghosts.Camera(body), 3000);    // the camera pinned, the zoom, the interface hidden
 				case "/trace": return Script.Last ?? "{\"ticks\":0,\"trace\":[]}";   // the last run's trace
 				case "/texture": return OnGame(_ => Tex.Png(q), 10000);   // a sprite sheet for the replay page
 				case "/craft": return OnGame(_ => Craft.Make(body), 5000);
@@ -185,6 +188,9 @@ namespace AgentIO
 				case "/gym": return OnGame(_ => Gym.Apply(body), 10000);
 				case "/save": return OnGame(_ => Gym.Save(), 20000);           // the world and the player to disk
 				case "/pause": return Pause(body);      // here, not on the game's thread: a paused game runs no job
+				case "/menu": return Menu.Leave();          // the world saved and left (Menu.cs)
+				case "/reload": return Menu.Reload();       // at the title screen: the mods loaded again from disk
+				case "/enter": return Menu.Enter(body);     // at the title screen: a character into a world
 				case "/run/cancel": return Script.Cancel();
 				case "/run":
 					var run = Script.Parse(body);

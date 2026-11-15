@@ -3,6 +3,8 @@ using System.Collections.Specialized;
 using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
+using Terraria.ModLoader;
+using Terraria.GameContent;
 
 namespace AgentIO
 {
@@ -16,9 +18,18 @@ namespace AgentIO
 			if (p == null || !p.active) return Json.Error("no player in a world");
 			int w = Int(q["w"], 80), h = Int(q["h"], 50);
 			int x0 = Int(q["x0"], (int)(p.Center.X / 16f) - w / 2), y0 = Int(q["y0"], (int)(p.Center.Y / 16f) - h / 2);
-			return Json.Of(new Dictionary<string, object>
+			var state = new Dictionary<string, object>
 			{
 				["tick"] = Main.GameUpdateCount,
+				["game_version"] = Main.versionNumber,
+				["world_flags"] = new Dictionary<string, object>
+				{
+					["expert"] = Main.expertMode, ["master"] = Main.masterMode,
+					["remix"] = Main.remixWorld, ["get_good"] = Main.getGoodWorld, ["zenith"] = Main.zenithWorld,
+					["slime_rain"] = Main.slimeRain, ["raining"] = Main.raining,
+					["blood_moon"] = Main.bloodMoon, ["eclipse"] = Main.eclipse,
+					["pumpkin_moon"] = Main.pumpkinMoon, ["snow_moon"] = Main.snowMoon,
+				},
 				["execution"] = Script.Execution(),
 				["time"] = new Dictionary<string, object> { ["day"] = Main.dayTime, ["time"] = Main.time, },
 				// where the character comes back to: its bed if it has one set, else the world's spawn point (cells)
@@ -66,7 +77,9 @@ namespace AgentIO
 					? Terraria.GameContent.Creative.CreativePowerManager.Instance
 						.GetPower<Terraria.GameContent.Creative.CreativePowers.DifficultySliderPower>().StrengthMultiplierToGiveNPCs
 					: Main.GameModeInfo.EnemyDamageMultiplier,
-			});
+			};
+			if (q["attack_shapes"] == "1") state["attack_shapes"] = AttackShapes.Sample(x0, y0, w, h, q);
+			return Json.Of(state);
 		}
 
 		// How far the world and the character have come, by the game's own flags: the bosses beaten (the Wall of Flesh's
@@ -101,6 +114,7 @@ namespace AgentIO
 
 		public static Dictionary<string, object> Body(Player p) => new()
 		{
+			["player_id"] = p.whoAmI, ["selected"] = p.selectedItem,
 			["x"] = p.position.X, ["y"] = p.position.Y, ["w"] = p.width, ["h"] = p.height,
 			["vx"] = p.velocity.X, ["vy"] = p.velocity.Y, ["dir"] = p.direction,
 			["ground"] = p.velocity.Y == 0f,     // the game's own test: a jump starts only then
@@ -108,21 +122,49 @@ namespace AgentIO
 			["rope"] = p.pulley, ["wing_time"] = p.wingTime, ["hooked"] = p.grapCount > 0,   // on a rope, flight left, on a hook (Oct 20)
 			["hook"] = Hook(p),                  // the hook out: where it is and whether it has latched (Oct 20)
 			["life"] = p.statLife, ["life_max"] = p.statLifeMax2, ["breath"] = p.breath,
+			["life_regen"] = p.lifeRegen, ["life_regen_count"] = p.lifeRegenCount,
+			["mana"] = p.statMana, ["mana_max"] = p.statManaMax2,
+			["no_knockback"] = p.noKnockback, ["long_invince"] = p.longInvince,
+			["damage_reduction"] = p.endurance, ["gravity_dir"] = p.gravDir,
+			["height_offset"] = p.HeightOffsetHitboxCenter,
+			["solar_set"] = p.setSolar, ["solar_shields"] = p.solarShields,
+			["beetle_defense"] = p.beetleDefense, ["beetle_orbs"] = p.beetleOrbs,
+			["cart"] = p.mount.Active && p.mount.Cart,
+			["hurt_cooldowns"] = (int[])p.hurtCooldowns.Clone(),
 			["defense"] = (int)p.statDefense,
 			// the share of the defense a hit loses: 0.5 in Classic and Journey, 0.75 Expert, 1 Master
 			["defense_eff"] = p.DefenseEffectiveness.Value,
 			["jump"] = p.jump, ["fall_start"] = p.fallStart,
 			["immune"] = p.immune, ["immune_time"] = p.immuneTime, ["potion_delay"] = p.potionDelay,
-			["item_animation"] = p.itemAnimation, ["dead"] = p.dead, ["chest"] = p.chest,
+			["item_animation"] = p.itemAnimation, ["item_animation_max"] = p.itemAnimationMax,
+			["item_time"] = p.itemTime, ["held_item"] = p.HeldItem.type,
+			["attack_cooldown"] = p.attackCD,
+			["channel"] = p.channel, ["mana_regen_delay"] = p.manaRegenDelay,
+			["minion_slots"] = p.slotsMinions, ["max_minions"] = p.maxMinions, ["max_sentries"] = p.maxTurrets,
+			["whip_range"] = p.whipRangeMultiplier, ["arm_offset"] = ArmOffset(p),
+			["dead"] = p.dead, ["chest"] = p.chest,
 		};
 
-		public static Dictionary<string, object> Physics(Player p) => new()
+		static readonly Projectile ArmProbe = new Projectile();
+		static float[] ArmOffset(Player p)
 		{
+			ArmProbe.owner = p.whoAmI;
+			var arm = Main.GetPlayerArmPosition(ArmProbe) - p.position;
+			return new[] { arm.X, arm.Y };
+		}
+
+		public static Dictionary<string, object> Physics(Player p)
+		{
+			var result = new Dictionary<string, object>
+			{
 			["run_acc"] = p.runAcceleration, ["run_top"] = p.maxRunSpeed, ["run_slow"] = p.runSlowdown,
 			["jump_speed"] = Player.jumpSpeed, ["jump_hold"] = Player.jumpHeight,
 			["gravity"] = p.gravity, ["fall_top"] = p.maxFallSpeed, ["extra_fall"] = p.extraFall,
 			["no_fall_damage"] = p.noFallDmg, ["range_x"] = Player.tileRangeX, ["range_y"] = Player.tileRangeY,
 			["block_range"] = p.blockRange, ["wing_time_max"] = p.wingTimeMax,
+			["wing_acc_mult"] = p.wingsLogic > 0 ? p.GetWingStats(p.wingsLogic).AccRunAccelerationMult : 1f,
+			["wing_run_top"] = p.wingsLogic > 0 ? p.GetWingStats(p.wingsLogic).AccRunSpeedOverride : -1f,
+			["wing_air"] = p.wingsLogic > 0 && p.velocity.Y != 0f && !p.merman && !p.mount.Active && p.grappling[0] == -1 && !p.tongued,
 			// what the gear and potions make safe: lava (Obsidian Skin, Lava Charm's remaining ticks in lava_time,
 			// Lava Waders), hot blocks (Obsidian Skull: fire_walk), swimming (Flipper), breathing (Gills)
 			["lava_immune"] = p.lavaImmune, ["fire_walk"] = p.fireWalk, ["lava_time"] = p.lavaTime,
@@ -131,7 +173,12 @@ namespace AgentIO
 			// pickaxe's use time), a Brick Layer tile_speed (on a block's)
 			["acc_run"] = p.accRunSpeed, ["pick_speed"] = p.pickSpeed,
 			["tile_speed"] = p.tileSpeed,
-		};
+			};
+			var wings = p.GetModPlayer<WingReadout>();
+			if (wings.Wing == p.wingsLogic && p.wingsLogic > 0)
+				foreach (var pair in wings.Vertical) result[pair.Key] = pair.Value;
+			return result;
+		}
 
 		public static List<Dictionary<string, object>> Bag(Player p)
 		{
@@ -140,7 +187,51 @@ namespace AgentIO
 			{
 				var it = p.inventory[i];
 				if (it == null || it.IsAir) continue;
-				bag.Add(Item(it, i));
+				var row = Item(it, i);
+				if (it.damage > 0 && it.ammo == 0)
+				{
+					var combat = new Dictionary<string, object>
+					{
+						["damage"] = p.GetWeaponDamage(it), ["knockback"] = p.GetWeaponKnockback(it),
+						["use_time"] = CombinedHooks.TotalUseTime(it.useTime, p, it),
+						["use_anim"] = CombinedHooks.TotalAnimationTime(it.useAnimation, p, it),
+						["reuse_delay"] = (int)(it.reuseDelay / CombinedHooks.TotalUseSpeedMultiplier(p, it)),
+						["scale"] = p.GetAdjustedItemScale(it),
+						["mana_cost"] = p.GetManaCost(it), ["crit"] = p.GetWeaponCrit(it),
+						["owned_projectiles"] = it.shoot > 0 ? p.ownedProjectileCounts[it.shoot] : 0,
+					};
+					var drawFrame = Terraria.Item.GetDrawHitbox(it.type, p);
+					combat["draw_frame"] = new[] { drawFrame.Width, drawFrame.Height };
+					combat["claw"] = Terraria.Item.claw[it.type];
+					combat["better_melee_location"] = ItemID.Sets.UsesBetterMeleeItemLocation[it.type];
+					// Preview the same ammo selection and modifiers the next shot uses, without consuming ammo.
+					int selected = p.selectedItem;
+					try
+					{
+						p.selectedItem = i;
+						if (it.useAmmo > 0 && p.PickAmmo(it, out int type, out float speed, out int damage,
+							out float knockback, out int ammoId, dontConsume: true) && ContentSamples.ProjectilesByType.TryGetValue(type, out var sample))
+						{
+							var shot = Flight(sample, p);
+							shot["speed"] = speed; shot["damage"] = damage; shot["knockback"] = knockback;
+							shot["ammo_slot"] = System.Array.IndexOf(p.inventory, p.ChooseAmmo(it));
+							combat["shot"] = shot;
+						}
+						else if (it.useAmmo == 0 && it.shoot > 0 && ContentSamples.ProjectilesByType.TryGetValue(it.shoot, out var directSample))
+						{
+							var shot = Flight(directSample, p);
+							float directSpeed = it.shootSpeed;
+							if (it.CountsAsClass(DamageClass.Melee) && !ProjectileID.Sets.NoMeleeSpeedVelocityScaling[it.shoot])
+								directSpeed *= p.GetTotalAttackSpeed(DamageClass.Melee);
+							shot["speed"] = directSpeed; shot["damage"] = p.GetWeaponDamage(it);
+							shot["knockback"] = p.GetWeaponKnockback(it);
+							combat["shot"] = shot;
+						}
+					}
+					finally { p.selectedItem = selected; }
+					row["combat"] = combat;
+				}
+				bag.Add(row);
 			}
 			return bag;
 		}
@@ -159,6 +250,12 @@ namespace AgentIO
 			                 !Main.tileFrameImportant[it.createTile],
 			["pick"] = it.pick, ["axe"] = it.axe, ["hammer"] = it.hammer,
 			["damage"] = it.damage, ["knockback"] = it.knockBack,
+			["no_melee"] = it.noMelee, ["no_use_graphic"] = it.noUseGraphic,
+			["consumable"] = it.consumable, ["mana_cost"] = it.mana,
+			["channel"] = it.channel, ["auto_reuse"] = it.autoReuse,
+			["damage_class"] = it.DamageType.Name, ["buff_type"] = it.buffType, ["buff_time"] = it.buffTime,
+			["base_use_anim"] = it.useAnimation,
+			["width"] = it.width, ["height"] = it.height,
 			["shoot"] = it.shoot, ["shoot_speed"] = it.shootSpeed, ["use_ammo"] = it.useAmmo, ["ammo"] = it.ammo,
 			["heal"] = it.healLife,
 			// a grappling hook: the game's own flag for the shot it fires (Main.projHook, what the grapple key looks for)
@@ -366,17 +463,38 @@ namespace AgentIO
 				if (n.CountsAsACritter || n.damage <= 0) continue;
 				var me = Main.LocalPlayer;
 				if (me != null && Vector2.Distance(n.Center, me.Center) > 1600f) continue;
+				// Player.Update_NPCCollision, Terraria 1.4.4.9: a separate
+				// protection counter for these contact sources.
+				int slot = n.type is 396 or 397 or 398 or 400 or 401 or 636 ? 1 : -1;
+				float multiplier = 1f;
+				var contactBox = n.Hitbox;
+				NPC.GetMeleeCollisionData(me.Hitbox, i, ref slot, ref multiplier, ref contactBox);
 				list.Add(new()
 				{
-					["i"] = i, ["id"] = n.type, ["name"] = n.TypeName, ["x"] = n.position.X, ["y"] = n.position.Y,
+					["i"] = i, ["id"] = n.type, ["net_id"] = n.netID, ["name"] = n.TypeName, ["x"] = n.position.X, ["y"] = n.position.Y,
 					["w"] = n.width, ["h"] = n.height, ["vx"] = n.velocity.X, ["vy"] = n.velocity.Y,
 					["life"] = n.life, ["life_max"] = n.lifeMax, ["damage"] = n.damage, ["defense"] = n.defense,
+					["hurt_slot"] = slot,
 					["kb_taken"] = n.knockBackResist, ["ai"] = n.aiStyle, ["through_blocks"] = n.noTileCollide,
 					["flies"] = n.noGravity, ["boss"] = n.boss,
+					["wet"] = n.wet, ["collide_x"] = n.collideX, ["collide_y"] = n.collideY,
+					["gravity"] = n.gravity, ["fall_top"] = n.maxFallSpeed,
+					["dir"] = n.direction, ["dir_y"] = n.directionY,
+					["old_vx"] = n.oldVelocity.X, ["old_x"] = n.oldPosition.X,
+					["old_vy"] = n.oldVelocity.Y,
+					["scale"] = n.scale,
+					["strength_multiplier"] = n.strengthMultiplier,
+					["just_hit"] = n.justHit, ["rotation"] = n.rotation,
+					["no_aggro"] = me.npcTypeNoAggro[n.type], ["dont_take_damage"] = n.dontTakeDamage,
+					["chaseable"] = n.CanBeChasedBy(),
+					["chases"] = n.aiStyle != 3 || NPC.DespawnEncouragement_AIStyle3_Fighters_NotDiscouraged(n.type, n.position, n),
+					["base_damage"] = n.defDamage, ["base_defense"] = n.defDefense,
+					["melee_immune"] = Main.LocalPlayer.meleeNPCHitCooldown[i], ["owner_immune"] = n.immune[Main.myPlayer],
 					// the picture of its sprite sheet the game draws now, and which way it faces (for the replay page)
 					["frame"] = new[] { n.frame.X, n.frame.Y, n.frame.Width, n.frame.Height }, ["sdir"] = n.spriteDirection,
 					["timers"] = new[] { n.ai[0], n.ai[1], n.ai[2], n.ai[3] },   // the game's own AI counters: a slime's
 					                                                              // countdown to its next hop (Oct 20)
+					["local_ai"] = new[] { n.localAI[0], n.localAI[1], n.localAI[2], n.localAI[3] },
 				});
 			}
 			return list;
@@ -406,6 +524,57 @@ namespace AgentIO
 		}
 
 		// every projectile in flight: the enemies' shots and the body's own arrows
+		static Dictionary<string, object> Flight(Projectile s, Player player = null)
+		{
+			var row = new Dictionary<string, object>
+			{
+			["id"] = s.type, ["w"] = s.width, ["h"] = s.height, ["ai"] = s.aiStyle, ["ai0"] = s.ai[0], ["ai1"] = s.ai[1],
+			// Projectile.Damage, Terraria 1.4.4.9. This selects a real player
+			// counter; it does not predict this projectile's behavior.
+			["hurt_slot"] = s.ModProjectile?.CooldownSlot ??
+				(s.type is 452 or 454 or 455 or 462 or 871 or 872 or 873 or 874 or 919 or 923 or 924 ? 1 : -1),
+			["scale"] = s.scale,
+			["arrow"] = s.arrow, ["tile_collide"] = s.tileCollide, ["extra_updates"] = s.extraUpdates,
+        ["time_left"] = s.timeLeft, ["penetrate"] = s.penetrate, ["max_penetrate"] = s.maxPenetrate,
+			["uses_local_npc_immunity"] = s.usesLocalNPCImmunity, ["local_npc_hit_cooldown"] = s.localNPCHitCooldown,
+			["uses_static_npc_immunity"] = s.usesIDStaticNPCImmunity, ["static_npc_hit_cooldown"] = s.idStaticNPCHitCooldown,
+			["owner_hit_check"] = s.ownerHitCheck, ["ignore_water"] = s.ignoreWater,
+			["wet"] = s.wet,
+			["minion"] = s.minion, ["sentry"] = s.sentry, ["minion_slots"] = s.minionSlots,
+			["whip"] = ProjectileID.Sets.IsAWhip[s.type],
+			["whip_segments"] = s.WhipSettings.Segments, ["whip_range"] = s.WhipSettings.RangeMultiplier,
+			["yoyo_range"] = ProjectileID.Sets.YoyosMaximumRange[s.type],
+			["yoyo_speed"] = ProjectileID.Sets.YoyosTopSpeed[s.type],
+			["yoyo_life"] = ProjectileID.Sets.YoyosLifeTimeMultiplier[s.type],
+			["local_ai"] = new[] { s.localAI[0], s.localAI[1] },
+			["rotation"] = s.rotation, ["direction"] = s.direction, ["sprite_direction"] = s.spriteDirection,
+			};
+			if (player != null && s.aiStyle == 99)
+			{
+				float reach = ProjectileID.Sets.YoyosMaximumRange[s.type];
+				if (player.yoyoString) reach = reach * 1.25f + 30f;
+				float factor = (1f + (1f / player.GetTotalAttackSpeed(DamageClass.Melee)) * 3f) / 4f;
+				row["yoyo_range"] = reach / factor;
+				row["yoyo_speed"] = ProjectileID.Sets.YoyosTopSpeed[s.type] / factor;
+			}
+			if (s.aiStyle == 16)
+			{
+				var blast = new Projectile(); blast.SetDefaults(s.type);
+				blast.damage = s.damage; blast.knockBack = s.knockBack;
+				blast.PrepareBombToBlow();
+				row["blast_w"] = blast.width; row["blast_h"] = blast.height;
+				row["self_hurt"] = ProjectileID.Sets.Explosive[s.type];
+			}
+			if (s.usesLocalNPCImmunity)
+			{
+				var immunity = new Dictionary<string, int>();
+				for (int i = 0; i < Main.maxNPCs; i++)
+					if (s.localNPCImmunity[i] != 0) immunity[i.ToString()] = s.localNPCImmunity[i];
+				row["local_immune"] = immunity;
+			}
+			return row;
+		}
+
 		public static List<Dictionary<string, object>> Shots()
 		{
 			var list = new List<Dictionary<string, object>>();
@@ -413,12 +582,12 @@ namespace AgentIO
 			{
 				var s = Main.projectile[i];
 				if (s == null || !s.active) continue;
-				list.Add(new()
-				{
-					["i"] = i, ["id"] = s.type, ["name"] = s.Name, ["x"] = s.position.X, ["y"] = s.position.Y,
-					["w"] = s.width, ["h"] = s.height, ["vx"] = s.velocity.X, ["vy"] = s.velocity.Y,
-					["damage"] = s.damage, ["knockback"] = s.knockBack, ["hostile"] = s.hostile, ["ai"] = s.aiStyle,
-			});
+				var row = Flight(s, s.owner >= 0 && s.owner < Main.maxPlayers ? Main.player[s.owner] : null);
+				row["i"] = i; row["name"] = s.Name; row["x"] = s.position.X; row["y"] = s.position.Y;
+				row["vx"] = s.velocity.X; row["vy"] = s.velocity.Y;
+				row["damage"] = s.damage; row["knockback"] = s.knockBack;
+				row["hostile"] = s.hostile; row["friendly"] = s.friendly; row["owner"] = s.owner;
+				list.Add(row);
 			}
 			return list;
 		}
@@ -492,5 +661,27 @@ namespace AgentIO
 		}
 
 		static int Int(string s, int fallback) => int.TryParse(s, out int v) ? v : fallback;
+	}
+
+	// Read the parameters when the real player uses the equipped wings.
+	public class WingReadout : ModPlayer
+	{
+		public int Wing;
+		public Dictionary<string, object> Vertical = new();
+	}
+
+	public class WingNumbers : GlobalItem
+	{
+		public override void VerticalWingSpeeds(Item item, Player player, ref float ascentWhenFalling,
+			ref float ascentWhenRising, ref float maxCanAscendMultiplier, ref float maxAscentMultiplier, ref float constantAscend)
+		{
+			var readout = player.GetModPlayer<WingReadout>();
+			readout.Wing = player.wingsLogic;
+			readout.Vertical["wing_constant"] = constantAscend;
+			readout.Vertical["wing_falling"] = ascentWhenFalling;
+			readout.Vertical["wing_rising"] = ascentWhenRising;
+			readout.Vertical["wing_rise_limit"] = maxCanAscendMultiplier;
+			readout.Vertical["wing_top"] = maxAscentMultiplier;
+		}
 	}
 }

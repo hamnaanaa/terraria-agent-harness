@@ -21,6 +21,11 @@ def draw(goal, state, plan, decision, episode):
             for edge in route:
                 if edge.get("arc"):
                     lines.append({"points": edge["arc"], "color": "#66c4ff80", "width": 2})
+    for track in decision.get("motion_paths", ()):
+        points = track["points"]
+        if len(points) > 1:
+            lines.append({"points": points[::3] + [points[-1]],
+                          "color": "#ffae5590" if track["group"] == "shot" else "#ff828290", "width": 2})
     if decision.get("path"):
         lines.append({"points": decision["path"], "color": "#7dfa95", "width": 3})
     title = goal.get("label")

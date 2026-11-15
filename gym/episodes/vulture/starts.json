@@ -1,0 +1,212 @@
+{
+  "world": "FirstLight",
+  "box": [
+    1874,
+    194,
+    1949,
+    233
+  ],
+  "crossing": {
+    "tick": 13330,
+    "body": {
+      "x": 30709.953,
+      "y": 3334.9792,
+      "vx": 0.42000115,
+      "vy": 1.7900003,
+      "life": 68,
+      "breath": 200
+    },
+    "bag": [
+      [
+        "Copper Shortsword",
+        1,
+        0
+      ],
+      [
+        "Copper Pickaxe",
+        1,
+        1
+      ],
+      [
+        "Copper Axe",
+        1,
+        2
+      ],
+      [
+        "Wood",
+        1,
+        3
+      ],
+      [
+        "Wooden Sword",
+        1,
+        4
+      ],
+      [
+        "Torch",
+        12,
+        5
+      ],
+      [
+        "Acorn",
+        1,
+        6
+      ],
+      [
+        "Lead Ore",
+        7,
+        7
+      ],
+      [
+        "Wood Platform",
+        8,
+        8
+      ],
+      [
+        "Tin Ore",
+        2,
+        9
+      ],
+      [
+        "Dirt Block",
+        4,
+        48
+      ],
+      [
+        "Gel",
+        2,
+        49
+      ],
+      [
+        "Copper Coin",
+        19,
+        53
+      ]
+    ],
+    "enemy": {
+      "name": "Vulture",
+      "x": 30781.15,
+      "y": 3315.8499,
+      "vx": 1.500002,
+      "vy": -2.8499982,
+      "life": 34,
+      "timers": [
+        1,
+        0,
+        0,
+        0
+      ]
+    },
+    "goal": {
+      "kind": "reach",
+      "area": [
+        1889,
+        214,
+        1895,
+        217
+      ],
+      "limit_ticks": 900,
+      "label": "Scout the foot of the west ridge for a cave"
+    }
+  },
+  "flight": {
+    "tick": 13277,
+    "body": {
+      "x": 30817.117,
+      "y": 3340.2383,
+      "vx": -1.28,
+      "vy": -4.61,
+      "life": 68,
+      "breath": 200
+    },
+    "bag": [
+      [
+        "Copper Shortsword",
+        1,
+        0
+      ],
+      [
+        "Copper Pickaxe",
+        1,
+        1
+      ],
+      [
+        "Copper Axe",
+        1,
+        2
+      ],
+      [
+        "Wood",
+        1,
+        3
+      ],
+      [
+        "Wooden Sword",
+        1,
+        4
+      ],
+      [
+        "Torch",
+        12,
+        5
+      ],
+      [
+        "Acorn",
+        1,
+        6
+      ],
+      [
+        "Lead Ore",
+        7,
+        7
+      ],
+      [
+        "Wood Platform",
+        8,
+        8
+      ],
+      [
+        "Tin Ore",
+        2,
+        9
+      ],
+      [
+        "Dirt Block",
+        4,
+        48
+      ],
+      [
+        "Gel",
+        2,
+        49
+      ],
+      [
+        "Copper Coin",
+        19,
+        53
+      ]
+    ],
+    "enemy": {
+      "name": "Vulture",
+      "x": 30841.102,
+      "y": 3360.84,
+      "vx": -1.2000002,
+      "vy": 2.2399986,
+      "life": 40,
+      "timers": [
+        1,
+        0,
+        0,
+        0
+      ]
+    },
+    "steps": [
+      {
+        "keys": [
+          "left"
+        ],
+        "ticks": 28
+      }
+    ]
+  }
+}

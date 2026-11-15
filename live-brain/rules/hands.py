@@ -37,6 +37,11 @@ def overlaps(body, cell):
             body["y"] < (y + 1) * CELL and body["y"] + body["h"] > y * CELL)
 
 
+def has_support(cell, wall, holds):
+    x, y = cell
+    return wall(x, y) or any(holds(a, b) for a, b in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)))
+
+
 def can_place(cell, body, phys, item, tile, wall, holds=None):
     """Rule «place»: the cell holds no tile (a liquid is fine), a tile that can hold a block touches one of its four
     sides (any tile but a torch, a plant, a cobweb: the game's no-attach ones) or a back wall stands behind it, no
@@ -51,7 +56,7 @@ def can_place(cell, body, phys, item, tile, wall, holds=None):
         return "out of reach"
     if overlaps(body, cell):
         return "the body stands in it"
-    if not (wall(x, y) or any(holds(a, b) for a, b in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)))):
+    if not has_support(cell, wall, holds):
         return "nothing holds it: no tile beside it that holds a block, no wall behind it"
     return None
 

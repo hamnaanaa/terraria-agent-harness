@@ -8,6 +8,7 @@ from rules import hands as Hd  # noqa: E402
 from rules import tiles as Tl  # noqa: E402
 
 CELL, BW, BH = 16, B.W, B.H
+MAX_BODY_ROWS = math.ceil(BH / CELL) + 1
 REACH = 7             # cells each way the hands' work is gathered over: the game's reach (5 columns, 4 rows from
                       # the body's sides) plus the body's own width and the first pickaxes' boost
 HOLDS = (16, 8, 3)
@@ -25,12 +26,11 @@ _ARCS = {}
 
 
 def arcs(phys, depth=0):
-    """The jump arcs on empty ground, from the body rule: for each hold, side and start speed the body's box tick by
-    tick, as cell offsets from the standing place (columns, rows, where the feet are, going down or not, where a
-    fall counts from). A running jump starts from a stand too: the side held for `run` ticks on the ground, then
-    the press, as the fast brain plays it. depth: rows of water over the floor the body stands on (0: dry); the
-    arc runs on water's numbers while the body's middle is under the surface and on air's above it (rule
-    «water_move»)."""
+    """Jump paths from the body rule, with tile checks only where the footprint or floor crossing changes.
+
+    Offsets are relative to the takeoff cell. A running jump holds the side for `run` ticks first.
+    At nonzero depth the body's movement switches between water and air at the surface.
+    """
     key = (depth,) + tuple(sorted((k, v) for k, v in phys.items() if isinstance(v, (int, float))))
     if key in _ARCS:
         return _ARCS[key]
@@ -43,7 +43,8 @@ def arcs(phys, depth=0):
                 b = B.start(0.0, -(BH - CELL))                 # the feet at the top of row 1: standing on it
                 b["wet"] = depth > 0
                 b["wing"] = phys.get("wing_time_max", 0)
-                steps, pts, prev = [], [], CELL
+                checks, pts = [], []
+                previous_box, previous_floor = None, 1
                 ground = lambda x, y: y >= 1                   # the floor under the run-up; none once in the air
                 for t in range(1, (240 if hold in HOLDS else 420) + run):
                     way = "left" if side < 0 else "right"
@@ -54,13 +55,18 @@ def arcs(phys, depth=0):
                     c0, c1 = B.span(dx, BW)
                     r0, r1 = B.span(dy - (BH - CELL), BH)
                     feet = dy + CELL
-                    steps.append((tuple(range(c0, c1 + 1)), tuple(range(r0, r1 + 1)), feet, feet > prev,
-                                  b["fall_start"] + 2))
+                    box = (c0, c1, r0, r1)
+                    floor = math.floor(feet / CELL)
+                    crossings = range(previous_floor + 1, floor + 1)
+                    runway = t <= run and (previous_box is None or box[:2] != previous_box[:2])
+                    body_changed = box != previous_box
+                    if runway or crossings or body_changed:
+                        checks.append((t, box, runway, crossings, body_changed, b["fall_start"] + 2))
                     pts.append((dx, dy))                    # the body's centre, from the standing place's
-                    prev = feet
+                    previous_box, previous_floor = box, floor
                     if feet > MAX_FALL * CELL:
                         break
-                out.append({"hold": hold, "side": side, "run": run, "steps": steps, "pts": pts, "depth": depth})
+                out.append({"hold": hold, "side": side, "run": run, "checks": checks, "pts": pts, "depth": depth})
     _ARCS[key] = out
     return out
 
@@ -96,20 +102,21 @@ def rise_table(phys):
     return out
 
 
-def pillar_ticks(phys, place, most=4):
-    """A jump straight up with blocks set under the feet on the way, from the body rule: for k = 1.. blocks, the
-    ticks until the body stands on the top one and the tick each block goes in. A block goes in once the feet have
-    cleared its row, the next one `place` ticks later (rule «use»); the body lands on the top block. None for a k
-    the jump cannot carry."""
+def pillar_ticks(phys, place, most=4, tile_boost=0):
+    """Ticks to build k rows upward using the body and reach rules, jumping again after landing when needed."""
     out = {}
     for k in range(1, most + 1):
         b = B.start(0.0, -(BH - CELL))
-        placed, t_last, at = 0, -99, []
-        for t in range(1, 120):
+        placed, t_last, at, jumped_at = 0, -99, [], 1
+        for t in range(1, 120 * k):
             top = 1 - placed                               # the floor is row 1; each block raises it one row
             floor = (lambda x, y, tr=top: y >= tr)
-            B.tick(b, {"jump"} if t <= HOLDS[0] else set(), phys, floor, floor)
-            if placed < k and t - t_last >= place and b["y"] + BH <= -placed * CELL:
+            if b["ground"] and b["released"]:
+                jumped_at = t
+            B.tick(b, {"jump"} if t - jumped_at < HOLDS[0] else set(), phys, floor, floor)
+            box = dict(b, w=BW, h=BH)
+            if (placed < k and t - t_last >= place and b["y"] + BH <= -placed * CELL
+                    and Hd.in_reach(box, (0, -placed), phys, tile_boost)):
                 placed += 1
                 t_last = t
                 at.append(t)
@@ -133,7 +140,7 @@ class Prices:
         self.dig_use = Hd.use_ticks(pick, phys.get("pick_speed", 1.0)) if pick else None
         self.place = Hd.use_ticks(block, phys.get("tile_speed", 1.0)) if block else None
         self.block_boost = block.get("tile_boost", 0) if block else 0
-        self.pillars = pillar_ticks(phys, self.place) if self.place else {}
+        self.pillars = pillar_ticks(phys, self.place, tile_boost=self.block_boost) if self.place else {}
         self.pillar = self.pillars.get(1, (None, None))[0]
         self.blocks = kit.get("blocks", 0) if block else 0
         plat = kit.get("platform")
@@ -171,6 +178,7 @@ class Grid:
         self.x0, self.y0, self.w, self.h = x0, y0, w, h
         T = [[cells.tile(x0 + c, y0 + r) for c in range(w)] for r in range(h)]
         sk, tk, pk, na, cb = cells.solid_kind, cells.top_kind, cells.pick, cells.no_attach, cells.can_break
+        self.floor_kind = {t: sk.get(t, False) or tk.get(t, False) for t in sk.keys() | tk.keys()}
         hk = cells.hurt_kind
         self.tile = T
         # the tiles that hurt (rules/tiles.py): a thorn is closed to walk through and open to dig; lava closes its
@@ -214,6 +222,25 @@ class Grid:
             return prices.dig(pk.get(t, 0)) if cb.get(t, True) else None
         self.dig = [[dig_of(t, c, r) for c, t in enumerate(row)] for r, row in enumerate(T)]
         self._fits, self._free = {}, {}
+        self._jump_masks = None
+
+    def jump_masks(self):
+        """One bit per column. Combine rows so a whole jump footprint can be tested at once."""
+        if self._jump_masks is None:
+            def row_masks(matrix):
+                return [sum(1 << c for c, cell in enumerate(row) if cell) for row in matrix]
+
+            def spans(rows):
+                combined = [None, rows]
+                for offset in range(1, MAX_BODY_ROWS):
+                    combined.append([v | rows[r + offset] if r + offset < self.h else v
+                                     for r, v in enumerate(combined[-1])])
+                return combined
+
+            solid, water = row_masks(self.solid), row_masks(self.water)
+            self._jump_masks = (row_masks(self.floor), spans(solid),
+                                spans([s | w for s, w in zip(solid, water)]))
+        return self._jump_masks
 
     def S(self, c, r):
         return self.solid[r][c] if 0 <= r < self.h and 0 <= c < self.w else True
@@ -384,48 +411,42 @@ class Grid:
 
 
 def jump_edges(g, P, u, arcs_, dry):
-    """The arcs from a standing place that land somewhere: (v, ticks, arc index). Each tick, going down, the feet
-    may cross a floor's top: the body lands there (rule «gravity»); else every cell of its box must be free."""
+    """Yield (landing cell, tick, arc index) for jumps whose run-up, flight and landing are clear."""
     c, r = u
+    floors, solid, solid_or_water = g.jump_masks()
+    flight = solid_or_water if dry else solid
     for ai, arc in enumerate(arcs_):
-        prev = float(CELL)
-        for t, (cols, rows, feet, desc, fs) in enumerate(arc["steps"], 1):
-            if t <= arc["run"] and not all(g.F(c + dc, r + 1) for dc in cols):
-                break                                      # the run-up needs floor under every step
+        for tick, (c0, c1, r0, r1), runway, crossings, body_changed, fall_start in arc["checks"]:
+            left, right = c + c0, c + c1
+            in_width = 0 <= left and right < g.w
+            columns = (1 << (c1 - c0 + 1)) - 1
+            columns = columns << left if left >= 0 else columns >> -left
+            if runway and (not in_width or not 0 <= r + 1 < g.h or floors[r + 1] & columns != columns):
+                break
+            top = r + r0
             landed = False
-            if desc and feet > prev:
-                lo, hi = int(math.floor(prev / CELL)) + 1, int(math.floor(feet / CELL))
-                for rho in range(lo, hi + 1):
-                    if any(g.F(c + dc, r + rho) for dc in cols):
-                        landed = True
-                        # a wall at the landing's height stops the body first: no landing here
-                        if any(g.S(c + dc, r + dr) for dc in cols for dr in rows if dr < rho):
-                            break
-                        # the standing place: the two columns that include the floor met
-                        for cl in cols[:-1]:
-                            v = (c + cl, r + rho - 1)
-                            if g.support(*v) and g.free(*v):
-                                break
-                        else:
-                            break
-                        # rule «fall_damage»: the rows from where the push ended to the landing's top row
-                        safe = not P.hurts(rho - 3 - fs) or (g.Wt(*v) and g.Wt(v[0], v[1] - 1))
+            for row in crossings:
+                floor = r + row
+                if not 0 <= floor < g.h or not floors[floor] & columns:
+                    continue
+                landed = True
+                # A wall above the floor can stop the body before it lands.
+                height = min(row, r1 + 1) - r0
+                if height > 0 and (not in_width or top < 0 or top + height > g.h or solid[height][top] & columns):
+                    break
+                for col in range(left, right):
+                    v = (col, floor - 1)
+                    if g.support(*v) and g.free(*v):
+                        safe = not P.hurts(row - 3 - fall_start) or (g.Wt(*v) and g.Wt(col, floor - 2))
                         if v != u and safe:
-                            yield v, t, ai
+                            yield v, tick, ai
                         break
+                break
             if landed:
                 break
-            blocked = False
-            for dc in cols:
-                for dr in rows:
-                    if g.S(c + dc, r + dr) or (dry and g.Wt(c + dc, r + dr)):
-                        blocked = True
-                        break
-                if blocked:
-                    break
-            if blocked:
+            height = r1 - r0 + 1
+            if body_changed and (not in_width or top < 0 or top + height > g.h or flight[height][top] & columns):
                 break
-            prev = feet
 
 
 def rope_descents(g, P, c, r, hanging=False):
@@ -731,12 +752,13 @@ def preds(g, P, v, into):
     for u, ticks, cells in g.platform_steps(c, r, P):
         out.append((u, ticks, ("platform", cells)))          # a step of a platform stair (rule «platform»)
     if P.place is not None and P.blocks > 0:
-        # a pillar: from k rows down, one jump with k blocks set under the feet on the way up (rule «jump», «use»);
+        # a pillar: from k rows down, jumping and setting k blocks under the feet (rules «jump», «use», «reach»);
         # the rows the body rises through are free, or dug first from where it stands (a block over the head in a
         # shaft, our own from a pillar gone wrong, left the pathfinder no way up: it routed 156 s around, Oct 19)
         for k, (ticks_k, _) in P.pillars.items():
             u = (c, r + k)
-            if not g.free(*u) or ticks_k is None:
+            # As with sideways mining, the preceding move may have cleared this body space.
+            if not g.fits(*u) or ticks_k is None:
                 continue
             dticks, dcells = g.digs([(cc, rr) for cc in (c, c + 1) for rr in range(r - 2, r + k - 2)])
             if dticks is None:
@@ -787,7 +809,7 @@ class Plan:
     def at(self, c, r):
         return self.T.get((c, r))
 
-    def node_of(self, b, put=()):
+    def node_of(self, b, put=(), dug=()):
         """The standing place of a body (x, y in px): its left column and feet row, or the column beside when it
         straddles three cells. Of the two, the one that has support in the map (the body stands on it, not on a
         block still to come), then the one with the fewer ticks to go."""
@@ -801,15 +823,21 @@ class Plan:
         if b.get("hooked"):
             known = [n for n in cands if n in self.T]          # on its hook the body hangs where it is
             return min(known, key=lambda n: self.T[n]) if known else cands[0]
+        def floor(c, r):
+            if (c, r) in put:
+                tile = put[c, r] if isinstance(put, dict) else 0
+                return g.floor_kind.get(tile, True)
+            return (c, r) not in dug and g.F(c - g.x0, r - g.y0)
+
         def supported(c, r):
-            return g.support(c - g.x0, r - g.y0) or (c, r + 1) in put or (c + 1, r + 1) in put
+            return floor(c, r + 1) or floor(c + 1, r + 1) or g.hold(c - g.x0, r - g.y0)
 
         if not any(supported(*n) for n in cands):
             # a body in the air (or swimming) belongs to the place it would come down on: the first row below with
             # support. Read at its own row mid-jump, the way's work was the pillar's upper cells, which cannot be set
             # before the lower ones, so every pillar stopped at one block (cliff, Oct 19 night)
             for dr in range(1, 40):
-                low = [(c, r + dr) for c, r in cands if g.support(c - g.x0, r + dr - g.y0)]
+                low = [(c, r + dr) for c, r in cands if supported(c, r + dr)]
                 if low:
                     cands = low
                     break
@@ -831,8 +859,10 @@ class Plan:
     def work_at(self, node, reach=REACH):
         """What the hands can do from here: the cells the way digs and the blocks it sets as far along as the hand
         reaches from this standing place (REACH cells each way, a little past the game's own reach; the fast brain
-        checks the exact reach when it plays the hand), nearest first, each with the ticks it takes off the way."""
-        out = {"dig": [], "put": [], "credit": {}, "under": set(), "rope": [], "hook": None, "open": [], "platform": []}
+        checks the exact reach when it plays the hand). The same work and its costs are used for action generation
+        and progress measurement, including when a forecast stops partway through a move."""
+        out = {"dig": [], "put": [], "under": set(), "rope": [], "hook": None, "open": [], "platform": [],
+               "ticks": self.at(*node), "costs": {kind: {} for kind in ("dig", "put", "rope", "open", "platform")}}
         u = node
         near = lambda c: abs(c[0] - node[0]) <= reach and abs(c[1] - node[1]) <= reach
         for _ in range(4 * reach):
@@ -843,27 +873,27 @@ class Plan:
             for c in e.get("rope", []):
                 if near(c):
                     out["rope"].append(c)
-                    out["credit"][c] = e["ticks"] / len(e["rope"])
+                    out["costs"]["rope"][c] = self.prices.rope_place
             for c in e.get("open", []):
                 if near(c) and c not in out["open"]:
                     out["open"].append(c)
-                    out["credit"][c] = OPEN_TICKS
+                    out["costs"]["open"][c] = OPEN_TICKS / len(e["open"])
             for c in e.get("platform", []):
                 if near(c) and c not in out["platform"]:
                     out["platform"].append(c)
-                    out["credit"][c] = e["ticks"] / len(e["platform"])
+                    out["costs"]["platform"][c] = self.prices.platform_place
             if e["kind"] == "hook" and out["hook"] is None and u == node:
                 out["hook"] = e["hook"]
             for c in e.get("dig", []):
                 if near(c):
                     out["dig"].append(c)
-                    out["credit"][c] = self.credit(c, "dig")
+                    out["costs"]["dig"][c] = self.grid.D(c[0] - self.grid.x0, c[1] - self.grid.y0) or 0
             if e["kind"] == "landing" and all(near(c) for c in e["put"]):
                 out["landing"] = e["put"]
             for c in e.get("put", []):
                 if near(c):
                     out["put"].append(c)
-                    out["credit"][c] = e["ticks"] / len(e["put"])
+                    out["costs"]["put"][c] = self.prices.place
                     if e["kind"] == "pillar":
                         out["under"].add(c)            # a block to stand on: set only from above (rule «pillar»)
             u = e["to"]
@@ -941,14 +971,6 @@ class Plan:
                 if lo <= hi:
                     d["spot"] = (lo, hi)
         return d
-
-    def credit(self, cell, kind, node=None):
-        """Ticks the way takes off when a work cell is done: the cell's dig ticks, or the block's whole move."""
-        g, P = self.grid, self.prices
-        if kind == "dig":
-            return g.D(cell[0] - g.x0, cell[1] - g.y0) or 0
-        e = self.next_edge(node) if node else None
-        return e["ticks"] if e and cell in e.get("put", []) else (P.place or 0)
 
     def words(self):
         if self.ticks is None:
@@ -1035,8 +1057,28 @@ def plan(cells, goal_cell, body, kit, phys, box=None, version=None, dry=False, k
 AIR_TICKS_PER_POINT = 7
 
 
-def head_underwater(world, body):
-    return world.water(int((body["x"] + BW / 2) // CELL), int((body["y"] + 4) // CELL))
+def head_underwater(world, body, put=(), dug=()):
+    return world.water(int((body["x"] + BW / 2) // CELL), int((body["y"] + 4) // CELL), put, dug)
+
+
+def can_breathe(world, body, put=(), dug=()):
+    x, y = int((body["x"] + BW / 2) // CELL), int((body["y"] + 4) // CELL)
+    return not world.solid(x, y, put, dug) and not world.water(x, y, put, dug)
+
+
+def plan_to_air(world, body, kit, phys, keep=()):
+    x, _, _, y = B.cells_of(body)
+    box = (x - 40, y - 25, 80, 50)
+    route = plan(world, (x, y), body, kit, phys, box=box, dry=True, keep=keep)
+    # Each edge fits the kit on its own. An escape must fit the kit for the whole route.
+    over_budget = [(kind, count) for kind, count in (("block", "blocks"), ("platform", "platforms"), ("rope", "ropes"))
+                   if getattr(route, count) > kit.get(count, 0)]
+    if over_budget:
+        kit = dict(kit)
+        for kind, count in over_budget:
+            kit[kind], kit[count] = None, 0
+        route = plan(world, (x, y), body, kit, phys, box=box, dry=True, keep=keep)
+    return route
 
 
 def air_needed(route, body):
@@ -1058,7 +1100,7 @@ def air_needed(route, body):
     return float("inf") if wet(last) and (route.explore or not way) else longest
 
 
-def breathable_plan(world, target, body, kit, phys, *, area=None, approach=False, keep=()):
+def breathable_plan(world, target, body, kit, phys, *, area=None, approach=False, keep=(), air_route=None):
     route = plan(world, target, body, kit, phys, area=area, approach=approach, keep=keep)
     if phys.get("gills"):
         return route
@@ -1070,16 +1112,15 @@ def breathable_plan(world, target, body, kit, phys, *, area=None, approach=False
         dry_route = plan(world, target, body, kit, phys, area=area, approach=approach, keep=keep, avoid_submerged=True)
         if dry_route.ticks is not None:
             return dry_route
-    x, _, _, y = B.cells_of(body)
-    return plan(world, (x, y), body, kit, phys, box=(x - 40, y - 25, 80, 50), dry=True, keep=keep)
+    return air_route if air_route is not None else plan_to_air(world, body, kit, phys, keep)
 
 
 
-def estimate(route, body, forecast=None):
-    """Price the body's continuation against the existing route."""
+def estimate(route, body, forecast=None, *, work=None):
+    """Remaining route ticks, with forecast work measured against the same work used to generate the action."""
     if route is None:
         return None
-    node = route.node_of(body, forecast["put"] if forecast else ())
+    node = route.node_of(body, forecast["put"] if forecast else (), forecast["dug"] if forecast else ())
     ticks = route.at(*node)
     if ticks is None:
         return None
@@ -1089,14 +1130,21 @@ def estimate(route, body, forecast=None):
         target = edge["to"][0]
         px = target * CELL - x if target > node[0] else x - (target + 1) * CELL
         ticks = route.at(*edge["to"]) + edge["ticks"] * max(0, min(CELL, px)) / CELL
-    if forecast and (forecast["put"] or forecast["hits_on"] or forecast["dug"] or forecast["ropes"]):
-        work = route.work_at(node)
-        for cell in set(work["dig"]):
+    if forecast:
+        if work is None:
+            raise ValueError("a forecast needs the route work from its starting state")
+        credit = 0
+        for cell, cost in work["costs"]["dig"].items():
             hits = 100 if cell in forecast["dug"] else forecast["hits_on"].get(cell, 0)
-            ticks -= work["credit"][cell] * min(hits, 100) / 100
-        placed = set(forecast["put"]) | set(forecast["swap"])
-        ticks -= (route.prices.place or 0) * len(set(work["put"]) & placed)
-        ticks -= (route.prices.platform_place or 0) * len(set(work["platform"]) & placed)
-        ticks -= (route.prices.rope_place or 0) * len(set(work["rope"]) & forecast["ropes"])
-        ticks -= OPEN_TICKS * len(set(work["open"]) & forecast["dug"])
+            credit += cost * min(hits, 100) / 100
+        placed = {c for c, tile in forecast["put"].items() if route.grid.floor_kind.get(tile, True)}
+        placed.update(c for c, actual in forecast["swap"].items() if actual in placed)
+        completed = {"put": placed, "platform": {c for c, tile in forecast["put"].items() if tile == 19},
+                     "rope": forecast["ropes"], "open": forecast["dug"]}
+        for kind, cells in completed.items():
+            credit += sum(cost for cell, cost in work["costs"][kind].items() if cell in cells)
+        if work["ticks"] is not None:
+            # Position may already account for completed work. Deduct only the part not reflected there.
+            credit = max(0, credit - max(0, work["ticks"] - ticks))
+            ticks -= credit
     return max(0, ticks)

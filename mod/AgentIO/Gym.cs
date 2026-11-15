@@ -52,13 +52,17 @@ namespace AgentIO
 		// 'm' mud, 'j' jungle grass, 'e' ebonstone, 'x' jungle thorns, 'w' cobweb, '^' spikes, 'H' hellstone, 'B' a back
 		// wall of dirt behind air, 't' a torch (set last, on the block beside or under it), '?' left as it is. clear: a
 		// box emptied first (tiles, walls, liquids, dropped items).
+		// Recorded terrain can send tiles instead of rows: [dx, dy, type, shape, liquid, liquidKind, wall, frameX, frameY].
 		public static string Stamp(string body)
 		{
 			using var doc = JsonDocument.Parse(body);
 			var root = doc.RootElement;
+			bool recorded = root.TryGetProperty("tiles", out var tiles);
+			if (recorded && Main.worldName != "Gym") return Json.Error("recorded terrain requires the Gym world");
 			int x0 = root.GetProperty("x0").GetInt32(), y0 = root.GetProperty("y0").GetInt32();
 			var rows = new List<string>();
-			foreach (var r in root.GetProperty("rows").EnumerateArray()) rows.Add(r.GetString());
+			if (!recorded)
+				foreach (var r in root.GetProperty("rows").EnumerateArray()) rows.Add(r.GetString());
 			bool reveal = !root.TryGetProperty("reveal", out var rv) || rv.GetBoolean();
 			int bx1 = x0, by1 = y0, bx2 = x0, by2 = y0 + rows.Count - 1, cells = 0, removed = 0;
 			var torches = new List<(int, int)>();
@@ -118,7 +122,29 @@ namespace AgentIO
 					}
 					cells++;
 				}
-			WorldGen.RangeFrame(bx1 - 1, by1 - 1, bx2 + 2, by2 + 2);
+			if (recorded)
+			{
+				foreach (var cell in tiles.EnumerateArray())
+				{
+					int x = x0 + cell[0].GetInt32(), y = y0 + cell[1].GetInt32();
+					if (!WorldGen.InWorld(x, y, 10)) continue;
+					var t = Main.tile[x, y];
+					t.ClearEverything();
+					int type = cell[2].GetInt32(), shape = cell[3].GetInt32();
+					t.HasTile = type >= 0;
+					if (t.HasTile) t.TileType = (ushort)type;
+					t.Slope = shape == 5 ? SlopeType.Solid : (SlopeType)shape;
+					t.IsHalfBlock = shape == 5;
+					t.LiquidAmount = cell[4].GetByte();
+					t.LiquidType = cell[5].GetInt32();
+					t.WallType = cell[6].GetUInt16();
+					t.TileFrameX = cell[7].GetInt16();
+					t.TileFrameY = cell[8].GetInt16();
+					bx2 = System.Math.Max(bx2, x); by2 = System.Math.Max(by2, y);
+					cells++;
+				}
+			}
+			else WorldGen.RangeFrame(bx1 - 1, by1 - 1, bx2 + 2, by2 + 2);
 			// torches after the rest, so each has the block beside or under it to hold on to: light for the person watching
 			int lit = 0;
 			foreach (var (tx, ty) in torches)
@@ -206,14 +232,17 @@ namespace AgentIO
 		//                                     true for a favorite
 		//   "feet": [x, y]                    the body standing with its left column at x and its feet in row y
 		//   "at": [px, py]                    the body's top left corner, in pixels
+		//   "velocity": [vx, vy]              starting velocity for a recorded Gym position
 		//   "heal": true                      full health, mana and breath, no debuffs, no potion sickness, standing still
 		//   "clear_buffs": true               every buff and debuff off (a potion from an earlier test lasts minutes)
 		//   "life": 40, "breath": 100         set them
 		//   "freeze": "noon" | "midnight" | false
 		//   "spawns": 0 | 1                   enemies come or not
-		//   "spawn": [["Zombie", x, y]]       an enemy with its feet on that cell
+		//   "spawn": [["Zombie", x, y]]       an enemy with its feet on that cell; optional fourth field is a recorded NPC state
 		//   "drop": [["Gel", 5, dx, dy]]      an item on the ground, dx cells right of the body and dy rows below its middle
 		//   "buff": [["MiningPotion", 60]]    a buff by its internal name, for that many seconds
+		//   "place": [["Campfire", x, y]]   place ordinary furniture, using its item placement settings (Gym only)
+		//   "prefix": [["bag", 0, "Rapid"]] or ["worn", 3, "Warding"]: ordinary item reforges (Gym only)
 		//   "butcher": true                   the hostile ones there go
 		//   "background": true | false        the game runs on with its window behind others
 		// POST /save: the world and the player written to disk now, as the game does on a clean exit. A restart kills
@@ -233,7 +262,21 @@ namespace AgentIO
 			if (p == null || !p.active) return Json.Error("no player in a world");
 			using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
 			var root = doc.RootElement;
+			if (root.TryGetProperty("collision_probe", out var probe))
+				return Json.Of(AttackShapes.Probe(probe));
+			bool hasVelocity = root.TryGetProperty("velocity", out var velocity);
+			bool hasSpawn = root.TryGetProperty("spawn", out var spawn);
+			if (Main.worldName != "Gym" && (root.TryGetProperty("place", out _) || root.TryGetProperty("prefix", out _)))
+				return Json.Error("furniture setup and reforging require the Gym world");
+			if (Main.worldName != "Gym" && (hasVelocity || hasSpawn))
+				return Json.Error("recorded motion and spawning require the Gym world");
 			var done = new List<string>();
+			if (root.TryGetProperty("clear_projectiles", out var cp) && cp.GetBoolean())
+			{
+				if (Main.worldName != "Gym") return Json.Error("clearing projectiles requires the Gym world");
+				for (int i = 0; i < Main.maxProjectiles; i++) Main.projectile[i].active = false;
+				done.Add("projectiles cleared");
+			}
 			if (p.dead)
 			{
 				// a dead body is not updated and cannot be moved: it comes back on the next tick, and the caller asks again
@@ -242,11 +285,41 @@ namespace AgentIO
 			}
 			if (root.TryGetProperty("wear", out var wear)) done.Add(Wear(p, wear));
 			if (root.TryGetProperty("life_max", out var lm)) done.Add(LifeMax(p, lm.GetInt32()));
+			if (root.TryGetProperty("mana_max", out var mm))
+			{
+				if (Main.worldName != "Gym") return Json.Error("setting mana requires the Gym world");
+				p.ConsumedManaCrystals = System.Math.Clamp((mm.GetInt32() - 20) / 20, 0, 9);
+				p.statManaMax = p.statManaMax2 = 20 + p.ConsumedManaCrystals * 20;
+				p.statMana = p.statManaMax2;
+				done.Add("mana capacity " + p.statManaMax2);
+			}
 			if (root.TryGetProperty("bag", out var bag)) done.Add(Bag(p, bag));
+			// Ordinary furniture and reforges for reproducible loadouts in Gym.
+			if (root.TryGetProperty("place", out var place))
+			{
+				foreach (var e in place.EnumerateArray())
+				{
+					var item = new Item();
+					item.SetDefaults(ItemType(e[0].GetString()));
+					bool placed = item.createTile >= 0 && WorldGen.PlaceObject(e[1].GetInt32(), e[2].GetInt32(), item.createTile, true, item.placeStyle);
+					done.Add((placed ? "placed " : "could not place ") + item.Name);
+				}
+			}
+			if (root.TryGetProperty("prefix", out var prefixes))
+			{
+				foreach (var e in prefixes.EnumerateArray())
+				{
+					var items = e[0].GetString() == "bag" ? p.inventory : p.armor;
+					int slot = e[1].GetInt32();
+					bool applied = slot >= 0 && slot < items.Length && PrefixID.Search.TryGetId(e[2].GetString(), out int prefix) && items[slot].Prefix(prefix);
+					done.Add((applied ? "reforged " : "could not reforge ") + e[2].GetString() + " " + e[0].GetString() + " " + slot);
+				}
+			}
 			if (root.TryGetProperty("feet", out var feet))
 				done.Add(Put(p, feet[0].GetInt32() * 16f + 6f, (feet[1].GetInt32() + 1) * 16f - p.height));
 			if (root.TryGetProperty("at", out var at)) done.Add(Put(p, at[0].GetSingle(), at[1].GetSingle()));
 			if (root.TryGetProperty("heal", out var heal) && heal.GetBoolean()) done.Add(Heal(p));
+			if (hasVelocity) p.velocity = new Vector2(velocity[0].GetSingle(), velocity[1].GetSingle());
 			if (root.TryGetProperty("clear_buffs", out var cb) && cb.GetBoolean())
 			{
 				int n = 0;
@@ -280,9 +353,9 @@ namespace AgentIO
 				SpawnScale = sp.GetSingle();
 				done.Add("spawns " + SpawnScale);
 			}
-			if (root.TryGetProperty("spawn", out var spawn))
+			if (hasSpawn)
 				foreach (var e in spawn.EnumerateArray())
-					done.Add(Spawn(e[0].GetString(), e[1].GetInt32(), e[2].GetInt32()));
+					done.Add(Spawn(e[0].GetString(), e[1].GetInt32(), e[2].GetInt32(), e.GetArrayLength() > 3 ? e[3] : default));
 			if (root.TryGetProperty("buff", out var buff))
 				foreach (var e in buff.EnumerateArray())
 				{
@@ -322,13 +395,22 @@ namespace AgentIO
 
 		// an enemy standing with its feet on the cell's bottom (x, y in cells), by its internal name («Zombie»,
 		// «BlueSlime», «DemonEye») or its English name
-		static string Spawn(string name, int x, int y)
+		static string Spawn(string name, int x, int y, JsonElement seed)
 		{
 			int type = NPCID.Search.TryGetId(name, out int id) ? id : 0;
 			for (int t = 1; t < NPCLoader.NPCCount && type == 0; t++)
 				if (string.Equals(Lang.GetNPCNameValue(t), name, System.StringComparison.OrdinalIgnoreCase)) type = t;
 			if (type <= 0) return "no enemy " + name;
 			int i = NPC.NewNPC(new Terraria.DataStructures.EntitySource_SpawnNPC(), x * 16 + 8, (y + 1) * 16, type);
+			if (i < Main.maxNPCs && seed.ValueKind == JsonValueKind.Object)
+			{
+				var n = Main.npc[i];
+				n.position = new Vector2(seed.GetProperty("x").GetSingle(), seed.GetProperty("y").GetSingle());
+				n.velocity = new Vector2(seed.GetProperty("vx").GetSingle(), seed.GetProperty("vy").GetSingle());
+				n.life = System.Math.Clamp(seed.GetProperty("life").GetInt32(), 1, n.lifeMax);
+				var ai = seed.GetProperty("timers");
+				for (int k = 0; k < n.ai.Length; k++) n.ai[k] = ai[k].GetSingle();
+			}
 			return i < Main.maxNPCs ? "spawned " + Main.npc[i].TypeName + " (" + i + ")" : "no room for " + name;
 		}
 

@@ -18,6 +18,8 @@ class Cells:
         self.solid_kind.setdefault(19, False)
         self.top_kind.setdefault(19, True)
         self.names.setdefault(19, "Platforms")
+        # A torch is non-solid even before one appears in the observed tile kinds.
+        self.solid_kind.setdefault(4, False)
 
     def tile(self, x, y, put=(), dug=()):
         if (x, y) in put:
