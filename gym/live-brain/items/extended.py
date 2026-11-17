@@ -1,5 +1,5 @@
 """Placement, crafting and inventory playthroughs."""
-from support import PICK, cell, count, loot_chest, open_chest, tile
+from support import PICK, cell, count, open_chest, tile
 
 NAMED = ("Gravestone", "Grave Marker", "Tombstone")
 BAG = [(name, n, slot) for slot, (name, n) in enumerate(
@@ -31,7 +31,7 @@ EPISODES = {
     "build_house": {"text": "Build the walls and roof of a dirt room from the blueprint.", "feet": (34, 59),
                     "bag": [("Dirt Block", 99, 1), PICK], "goals": lambda: [change(HOUSE)]},
     "open_chest": {"text": "Walk to the chest, open it, and verify the loot in the bag.", "feet": (30, 59),
-                   "terrain": CHEST, "goals": lambda: [open_chest((45, 58)), loot_chest()]},
+                   "terrain": CHEST, "goals": lambda: [open_chest((45, 58))]},
     "craft_chair": {"text": "Walk to the work bench and craft a wooden chair.", "feet": (30, 59),
                     "bag": [("Wood", 4, 0)], "terrain": [(45, 59, 45, 59, "W")],
                     "goals": lambda: [({"kind": "interact", "operation": "craft", "cell": cell(45, 59),
@@ -45,5 +45,5 @@ EPISODES = {
                     "goals": lambda: [("/trash", {"items": NAMED}, moved_named)]},
     "store_named": {"text": "Reach the near chest and store only the named non-favorite items.",
                     "feet": (30, 59), "bag": BAG, "terrain": CHEST + [(90, 59, 90, 59, "C")],
-                    "goals": lambda: [open_chest((45, 58)), ("/chest", {"put": NAMED}, moved_named)]},
+                    "goals": lambda: [open_chest((45, 58), take=False), ("/chest", {"put": NAMED}, moved_named)]},
 }

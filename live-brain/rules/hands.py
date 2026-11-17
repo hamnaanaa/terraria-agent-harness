@@ -48,17 +48,21 @@ def can_place(cell, body, phys, item, tile, wall, holds=None):
     body overlaps it, and it is in reach. tile(x, y) -> the tile type or -1, wall(x, y) -> the wall type or 0,
     holds(x, y) -> whether that tile holds a block (tile >= 0 when not given). Returns None when it can, else why
     not. Gym test: place_rules."""
+    return next(placement_reasons(cell, body, phys, item, tile, wall, holds), None)
+
+
+def placement_reasons(cell, body, phys, item, tile, wall, holds=None):
+    """The same placement constraints, including all current reasons when explaining a failure."""
     x, y = cell
     holds = holds or (lambda a, b: tile(a, b) >= 0)
     if tile(x, y) >= 0:
-        return "the cell holds a tile"
+        yield "the cell holds a tile"
     if not in_reach(body, cell, phys, item.get("tile_boost", 0)):
-        return "out of reach"
+        yield "out of reach"
     if overlaps(body, cell):
-        return "the body stands in it"
+        yield "the body stands in it"
     if not has_support(cell, wall, holds):
-        return "nothing holds it: no tile beside it that holds a block, no wall behind it"
-    return None
+        yield "nothing holds it: no tile beside it that holds a block, no wall behind it"
 
 
 def use_ticks(item, speed=1.0):

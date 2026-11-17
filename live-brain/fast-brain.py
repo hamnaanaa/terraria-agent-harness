@@ -14,7 +14,20 @@ DARK = 0.25
 
 
 def material_key(goal, item):
-    return (goal.get("preserve", {}).get(item["name"], 0), -item["stack"], item["id"])
+    return (goal.get("preserve", {}).get(item["name"], 0), item.get("value", inf), -item["stack"], item["id"])
+
+
+def materials(goal, bag, test):
+    """Keep costlier materials only when stock, reach or placement speed adds an option."""
+    choices = sorted((i for i in bag if test(i)), key=lambda i: material_key(goal, i))
+    return [item for item in choices if not any(
+        # Old recorded observations have no price; do not infer one for pruning.
+        "value" in other and "value" in item and
+        material_key(goal, other) < material_key(goal, item) and
+        other["stack"] >= item["stack"] and
+        other.get("tile_boost", 0) >= item.get("tile_boost", 0) and
+        "use_time" in other and "use_time" in item and other["use_time"] <= item["use_time"]
+        for other in choices)]
 
 
 def items_for(state, goal):
@@ -22,13 +35,31 @@ def items_for(state, goal):
     kit = {}
     for kind, test in (
         ("block", lambda i: i["block_tile"]), ("platform", lambda i: i["place_tile"] == 19),
-        ("rope", lambda i: i["place_tile"] == 213), ("hook", lambda i: i["hook"]),
+        ("rope", lambda i: i["place_tile"] == 213),
     ):
-        kit[kind] = min((i for i in bag if test(i)), key=lambda i: material_key(goal, i), default=None)
+        choices = materials(goal, bag, test)
+        kit[kind] = choices[0] if choices else None
+    kit["hook"] = min((i for i in bag if i["hook"]),
+                      key=lambda i: (goal.get("preserve", {}).get(i["name"], 0), -i["stack"], i["id"]),
+                      default=None)
     for name, kind in (("blocks", "block"), ("platforms", "platform"), ("ropes", "rope")):
         kit[name] = kit[kind]["stack"] if kit[kind] else 0
     kit["pick"] = max((i for i in bag if i["pick"]), key=lambda i: (i["pick"], -i["use_time"], -i["id"]), default=None)
     return bag, kit
+
+
+def tile_uses(cells, world, bag):
+    """The tool or material choices for requested terrain edits, also used to plan their reach."""
+    for c, r, tile in cells:
+        cell = (c, r)
+        there = world.raw_tile(*cell)
+        if there >= 0:
+            tool = "axe" if world.names.get(there) == "Trees" else "pick"
+            best = max((i for i in bag if i[tool]), key=lambda i: (i[tool], -i["use_time"]), default=None)
+            if best:
+                yield ("dig", best, None, cell)
+        elif there == -1 and tile >= 0 and hands.has_support(cell, world.wall, world.holds):
+            yield from (("put", i, None, cell) for i in bag if i["place_tile"] == tile)
 
 
 def candidates(state, world, goal, plan, work, bag):
@@ -40,18 +71,8 @@ def candidates(state, world, goal, plan, work, bag):
     elif not state["body"]["ground"] or any(world.top_kind.get(world.raw_tile(c, feet + 1)) for c in range(x, x1 + 1)):
         keys += [("down",), ("left", "down"), ("right", "down")]
 
-    hand = [None]
     wrong = goals.wrong_cells(goal, world) if goal["kind"] == "change" else ()
-    for c, r, tile in wrong:
-        cell = (c, r)
-        there = world.raw_tile(*cell)
-        if there >= 0:
-            tool = "axe" if world.names.get(there) == "Trees" else "pick"
-            best = max((i for i in bag if i[tool]), key=lambda i: (i[tool], -i["use_time"]), default=None)
-            if best:
-                hand.append(("dig", best, None, cell))
-        elif there == -1 and tile >= 0 and hands.has_support(cell, world.wall, world.holds):
-            hand.extend(("put", i, None, cell) for i in bag if i["place_tile"] == tile)
+    hand = [None, *tile_uses(wrong, world, bag)]
 
     pick = max((i for i in bag if i["pick"]), key=lambda i: (i["pick"], -i["use_time"]), default=None)
     if pick:
@@ -62,7 +83,7 @@ def candidates(state, world, goal, plan, work, bag):
         ("rope", "rope", lambda i: i["place_tile"] == 213),
     ):
         if work.get(tag):
-            for item in sorted((i for i in bag if test(i)), key=lambda i: material_key(goal, i)):
+            for item in materials(goal, bag, test):
                 first = work[tag][0]
                 hand.append((kind, item, None, first))
                 landing = work.get("landing", ())
@@ -210,43 +231,44 @@ def healing_value(state, result, use, attack_eta):
 
 
 def rank(goal, state, result, estimate, material, distance, preserve, advancing=None):
+    damage = result["damage"]
+    recovery = result.get("healing_value", 0) if goal["kind"] == "defeat" else result["healed"]
+    dies = result["body"]["life"] <= 0 or result.get("unknown_landing", False)
+    safety = (dies, max(0, damage - recovery), result.get("settling_damage", 0),
+              result.get("contacts", 0), result.get("pressure", 0))
+    rate = result.get("dealt", 0) / max(1, result.get("ticks", HORIZON))
     if goal["kind"] == "maintain":
         x, _, _, y = body.cells_of(result["body"])
         x0, y0, x1, y1 = goal["area"]
         outside = max(0, x0 - x, x - x1) + max(0, y0 - y, y - y1)
         motion = abs(state["body"]["x"] - result["body"]["x"]) + abs(state["body"]["y"] - result["body"]["y"])
-        return (result["body"]["life"] <= 0, max(0, result["damage"] - result["healed"]),
-                result.get("settling_damage", 0), result.get("wet_wait", False), outside,
-                result.get("contacts", 0), -result.get("dealt", 0), motion,
+        return (*safety, result.get("wet_wait", False), outside, -rate, motion,
                 material + result["shots"] + int(result["healed"] > 0))
     # Estimate the time before running out of health at this forecast's damage rate.
     life = state["body"]["life"] + result["healed"]
-    damage = result["damage"]
     survival = result["ticks"] * life / damage if damage else inf
-    dies = result["body"]["life"] <= 0 or result.get("unknown_landing", False)
     finishes_first = estimate < inf and estimate < survival
     work = result["measurement"]["remaining"]
     if goal["kind"] == "defeat" and "pressure" in result:
-        recovery = result.get("healing_value", 0)
         useful = result.get("dealt", 0) > 0 or recovery > 0
         movement = abs(state["body"]["x"] - result["body"]["x"]) + abs(state["body"]["y"] - result["body"]["y"])
-        return (dies, work != 0, max(0, damage - recovery), result.get("contacts", 0),
-                not useful, result["pressure"], -recovery, estimate, -result.get("dealt", 0),
+        return (*safety, work != 0, not useful, -recovery, estimate, -rate,
                 preserve, material + result["shots"] + int(result["healed"] > 0),
                 (0 if result.get("ranged") else movement) if useful else distance)
+    # Work and travel advance when predicted hits are equal; proximity breaks progress ties.
+    safety, proximity = safety[:-1], safety[-1]
     # A partial tool hit can matter even when the tile is still present.
     partial = sum(result["hits_on"].values()) if goal["kind"] == "change" else 0
     if goal["kind"] == "change":
-        return (dies, not finishes_first, work, -partial, damage, result.get("contacts", 0), result.get("head_underwater", False),
-                estimate, distance, preserve, material)
+        return (*safety, not finishes_first, work, -partial, result.get("head_underwater", False),
+                estimate, proximity, -rate, distance, preserve, material)
     if advancing is not None:
-        return (dies, damage, result["contacts"], not advancing, estimate, distance,
-                result["shots"], -result["dealt"], preserve, material)
+        return (*safety, not advancing, estimate, proximity, distance, result["shots"], -rate, preserve, material)
     if finishes_first:
         if goal["kind"] == "defeat":
-            return (dies, False, damage, result.get("contacts", 0), estimate, work, preserve, material, distance)
-        return (dies, False, estimate, work, -partial, damage, result.get("contacts", 0), preserve, material, distance)
-    return (dies, True, damage, result.get("contacts", 0), work, -partial, distance, preserve, material, estimate)
+            return (*safety, False, estimate, work, proximity, preserve, material, distance)
+        return (*safety, False, estimate, work, -partial, proximity, -rate, preserve, material, distance)
+    return (*safety, True, work, -partial, distance, proximity, -rate, preserve, material, estimate)
 
 
 def torch_placement(state, world, goal, bag, phys, move):
@@ -393,6 +415,11 @@ def decide(state, world, goal, baseline, plan, target, timing, deadline, continu
         if not escaping and operation in ("craft", "wear", "life_crystal", "chest", "door", "use"):
             body_box = state["body"]
             cell = goal.get("cell")
+            if operation == "chest" and goal.get("take", True) and body_box["chest"] >= 0:
+                payload = {"take": "all", "cell": cell}
+                if "chest_id" in goal:
+                    payload["chest_id"] = goal["chest_id"]
+                return {"endpoint": "/chest", "payload": payload, "label": "take chest loot"}
             in_reach = cell is None or hands.in_reach(body_box, cell, phys)
             if in_reach and operation in ("craft", "wear"):
                 return {"endpoint": "/" + operation, "payload": {"item": goal["item"]}, "label": operation}
@@ -431,7 +458,7 @@ def decide(state, world, goal, baseline, plan, target, timing, deadline, continu
             prefix = list(continuing) + [frozenset()] * max(0, HORIZON - len(continuing))
             result = play(state, world, foes, (), None, phys, state["strength"], work, 0, 0, 0, stop,
                           prefix=prefix, land=move_plan is not None or air_route is not None, movement=movement,
-                          spacing_ticks=reaction_ticks if goal["kind"] == "defeat" else 0)
+                          spacing_ticks=reaction_ticks if foes else 0)
             forecasts.append((None, None, result))
         for move, use in moves:
             if forecasts and timing.now() + forecast_seconds >= deadline:
@@ -440,7 +467,7 @@ def decide(state, world, goal, baseline, plan, target, timing, deadline, continu
             keys, jump_at, hold, jump_hold = move
             result = play(state, world, foes, keys, use, phys, state["strength"], work, jump_at, hold, jump_hold, stop,
                           horizon=max(HORIZON, hold), land=move_plan is not None or air_route is not None, movement=movement,
-                          spacing_ticks=reaction_ticks if goal["kind"] == "defeat" else 0)
+                          spacing_ticks=reaction_ticks if foes else 0)
             forecasts.append((move, use, result))
             forecast_seconds = max(forecast_seconds, timing.now() - before)
     with timing.span("fast.filter"):
@@ -578,7 +605,8 @@ def decide(state, world, goal, baseline, plan, target, timing, deadline, continu
                     keys, jump_at, hold, jump_hold = move
                     lit = play(state, world, foes, keys, torch, phys, state["strength"], work,
                                jump_at, hold, jump_hold, stop, horizon=max(HORIZON, hold),
-                               land=move_plan is not None or air_route is not None)
+                               land=move_plan is not None or air_route is not None,
+                               spacing_ticks=reaction_ticks if foes else 0)
                     if lit["puts_at"] == [(1, torch[3])] and not lit["damage"] and lit["path"] == result["path"]:
                         lit["measurement"] = result["measurement"]
                         if "air_ticks" in result:

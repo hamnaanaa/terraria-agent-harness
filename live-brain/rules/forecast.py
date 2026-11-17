@@ -397,7 +397,7 @@ def play(state, world, foes0, keys, use, phys, strength, work, jump_at, hold, ju
             elif kind == "dig":
                 cell = use[3]
                 tt = world.tile(*cell, put, dug)
-                if tt >= 0 and world.can_break.get(tt, True) and Hd.in_reach(body, cell, phys, item.get("tile_boost", 0)):
+                if tt >= 0 and world.can_break(*cell) and Hd.in_reach(body, cell, phys, item.get("tile_boost", 0)):
                     if item.get("axe", 0) > 0 and item.get("pick", 0) == 0:
                         dmg = Hd.axe_damage(item) if world.names.get(tt) == "Trees" else 0   # an axe cuts trees only
                     else:

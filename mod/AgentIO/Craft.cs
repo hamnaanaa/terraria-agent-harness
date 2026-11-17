@@ -231,7 +231,15 @@ namespace AgentIO
 					["missing"] = names == null ? new List<string>() : names.FindAll(x => !found.Contains(x)),
 				});
 			}
+			using var request = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+			var root = request.RootElement;
+			if ((root.TryGetProperty("chest_id", out var wanted) && wanted.GetInt32() != p.chest) ||
+			    (root.TryGetProperty("cell", out var cell) && cell.ValueKind != JsonValueKind.Null &&
+			     (cell[0].GetInt32() < chest.x || cell[0].GetInt32() > chest.x + 1 ||
+			      cell[1].GetInt32() < chest.y || cell[1].GetInt32() > chest.y + 1)))
+				return Json.Of(new Dictionary<string, object> { ["stopped"] = "the open chest is not the requested chest" });
 			var took = new List<string>();
+			var remaining = new List<string>();
 			for (int i = 0; i < chest.item.Length; i++)
 			{
 				var it = chest.item[i];
@@ -239,12 +247,13 @@ namespace AgentIO
 				var left = p.GetItem(p.whoAmI, it.Clone(), GetItemSettings.InventoryEntityToPlayerInventorySettings);
 				int taken = it.stack - (left.IsAir ? 0 : left.stack);
 				if (taken > 0) took.Add(it.Name + " x" + taken);
+				if (!left.IsAir) remaining.Add(left.Name + " x" + left.stack);
 				chest.item[i] = left.IsAir ? new Item() : left;
 			}
 			p.chest = -1;
 			Main.playerInventory = false;        // the chest opened the bag's panel; closed again for the person watching
 			Recipe.FindRecipes();
-			return Json.Of(new Dictionary<string, object> { ["took"] = took });
+			return Json.Of(new Dictionary<string, object> { ["took"] = took, ["remaining"] = remaining });
 		}
 
 		// POST /trash {"items": ["Tombstone", "Grave Marker"]}: every stack of the named items in the bag's 50 slots (0 to

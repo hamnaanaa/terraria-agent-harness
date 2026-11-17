@@ -9,12 +9,18 @@ Copy a small part of a world into Gym when a playthrough exposes a failure. Keep
 - `vulture`: FirstLight's west ridge. Reach the recorded target area with at most one vulture hit from tick 13330. A separate start at tick 13277 compares the next 27 ticks of flight to the forecast, within half a tile, using the player's actual positions.
 - `vulture_waiting` and `vulture_retreat`: the airborne vulture from FirstLight at tick 3866, with Scout01's gear. Defeat it while waiting, or reach the area to the east. Each case allows one hit. Stone at the edges keeps the player from falling off the copied terrain.
 
+- `recorded_exploration`: DawnCircuit1115 at tick 2636. Search the patch below the hollow for a life crystal. Checks the game's actual revealed cells, rather than the predicted route length. The source goal allowed 40 seconds, which revealed 126 of its 428 unseen cells after the fix. This Gym case allows 180 seconds; full coverage took 164.6 seconds with the recorded tools.
+- `recorded_platform_climb`: DawnCircuit1115 at tick 34120. Place the support platforms from bottom to top, climb out, reach the eastern iron vein and mine all twelve requested tiles.
+
+The two navigation replays preserve the recorded terrain, inventory and remembered map, with enemies omitted to test navigation separately. Cells not present in the observations are filled with stone at the crop edges; every requested goal cell has recorded terrain. A stone border keeps falling tiles and liquid from older Gym scenes outside the crop.
+
 Run from the repository root with the game in Gym:
 
 ```sh
 python3 gym/live-brain/run.py --watch recorded
 python3 gym/live-brain/run.py --watch lake
 python3 gym/live-brain/run.py --watch vulture
+python3 gym/live-brain/run.py --watch recorded_platform_climb
 ```
 
 These run separately from the 70 standard scenarios. A failed check is a baseline for a later fix. Logs and results go in `runs/`. They use Gym's Journey settings, so damage and enemy max health can differ from the source world.

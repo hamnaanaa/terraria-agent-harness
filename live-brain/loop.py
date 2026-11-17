@@ -16,6 +16,7 @@ from map import Map
 import overlay
 import pathfinder
 from rules.body import cells_of
+from rules.hands import in_reach
 from rules.projectiles import observe_shapes
 
 fast = importlib.import_module("fast-brain")
@@ -76,9 +77,13 @@ class Loop:
         self.session = None
 
     def read(self):
-        return self.io.call("/state?w=90&h=50&attack_shapes=1&shape_step=16", timeout=4)
+        state = self.io.call("/state?w=90&h=50&attack_shapes=1&shape_step=16", timeout=4)
+        if "can_break" not in state["cells"]:
+            raise RuntimeError("update AgentIO: per-cell mining permissions are required")
+        return state
 
-    def run(self, goal, record, episode=None, *, next_goal=None, on_result=None, stop_waiting=None):
+    def run(self, goal, record, episode=None, *, next_goal=None, on_result=None, stop_waiting=None,
+            initial_baseline=None, replace_goal=None):
         """Run one goal, or stay active when a caller supplies a goal source."""
         if goal is None and next_goal is None:
             raise ValueError("expected a goal or goal source")
@@ -125,20 +130,23 @@ class Loop:
                 with timing.span("motion.observe"):
                     state = observe_motion(state)
                 with timing.span("goal.select"):
-                    if goal is None or goal.get("waiting"):
+                    incoming = replace_goal(state) if replace_goal and not state["body"]["dead"] else None
+                    if incoming is None and not state["body"]["dead"] and (goal is None or goal.get("waiting")):
                         incoming = next_goal()
-                        if incoming is not None:
-                            if incoming["kind"] not in goals.KINDS or incoming["limit_ticks"] <= 0:
-                                raise ValueError("expected a known goal and positive limit_ticks")
-                            goal = incoming
-                        elif goal is None:
-                            goal = goals.waiting_goal(state)
-                        if incoming is not None or first is None:
-                            goal_id = uuid4().hex
-                            first = plan = signature = None
-                            goal_started = timing.now()
-                            first_round = round_no
-                            record({"type": "goal", "goal": goal, "state": state})
+                    if incoming is not None:
+                        if incoming["kind"] not in goals.KINDS or incoming["limit_ticks"] <= 0:
+                            raise ValueError("expected a known goal and positive limit_ticks")
+                        goal = incoming
+                        first = plan = signature = initial_baseline = None
+                    elif goal is None:
+                        goal = goals.waiting_goal(state)
+                    if first is None:
+                        goal_id = uuid4().hex
+                        baseline = goals.begin(goal, state) if initial_baseline is None else initial_baseline
+                        initial_baseline = None
+                        goal_started = timing.now()
+                        first_round = round_no
+                        record({"type": "goal", "goal": goal, "baseline": baseline, "state": state})
                 with timing.span("map.update"):
                     changes = self.world.update(state["cells"])
                     if air_route:
@@ -150,7 +158,6 @@ class Loop:
                     execution = state["execution"]
                     if first is None:
                         first = state
-                        baseline = goals.begin(goal, state)
                     effects = {}
                     if previous is not None:
                         effects = {
@@ -179,14 +186,20 @@ class Loop:
                 if not check and not execution["pending"]:
                     with timing.span("pathfinder.inputs"):
                         target, area, approach = destination(goal, state, self.world)
-                        _, kit = fast.items_for(state, goal)
+                        bag, kit = fast.items_for(state, goal)
+                        if approach and goal["kind"] == "change":
+                            uses = fast.tile_uses(goals.wrong_cells(goal, self.world), self.world, bag)
+                            kit["target_boost"] = max((use[1].get("tile_boost", 0) for use in uses
+                                                       if use[3] == target), default=0)
                         phys = dict(state["physics"], defense=state["body"]["defense"])
                         # Slot moves and irrelevant inventory changes leave the route valid.
                         relevant = tuple((k, v["id"], v["use_time"], v["tile_boost"]) if isinstance(v, dict) else (k, v)
                                          for k, v in kit.items())
                         key = (target, area, approach, self.world.version, relevant, phys)
                         body = state["body"]
-                        off_route = plan and body["ground"] and plan.at(*plan.node_of(body)) is None
+                        at = plan.at(*plan.node_of(body)) if plan else None
+                        off_route = plan and body["ground"] and (at is None or
+                            approach and at == 0 and not in_reach(body, target, phys, kit.get("target_boost", 0)))
                         wet_head = pathfinder.head_underwater(self.world, body)
                         box = state["cells"]
                         water_near = not phys.get("gills") and (wet_head or any(
@@ -214,7 +227,8 @@ class Loop:
                             "capabilities changed" if key[4:] != signature[4:] else "air budget changed" if air_replan else "outside route")
                         with timing.span("pathfinder.plan"):
                             plan = pathfinder.breathable_plan(self.world, target, body, kit, phys, area=area,
-                                                   approach=approach, keep=keep, air_route=air_route)
+                                                   approach=approach, keep=keep, air_route=air_route,
+                                                   search_area=goal["area"] if goal["kind"] == "search" else None)
                             signature = key
                     if target is None:
                         plan = signature = None
@@ -251,6 +265,8 @@ class Loop:
                             expected = None
                             if ack.get("made") == 0 and ack.get("stopped"):
                                 check = ("failed", ack["stopped"])
+                            if decision["endpoint"] == "/chest":
+                                check = goals.chest_result(ack)
                         elif "steps" in decision:
                             ticks = sum(step["ticks"] for step in decision["steps"])
                             command_id = f"{goal_id}:{round_no}"
@@ -287,6 +303,10 @@ class Loop:
                         else:
                             delay = 1 / 60
                         time.sleep(delay)
+                failure_blockers = None
+                if check and check[0] in ("failed", "timeout"):
+                    with timing.span("goal.explain"):
+                        failure_blockers = goals.blockers(goal, state, self.world)
                 with timing.span("record.prepare"):
                     effects["life"] = state["body"]["life"]
                     effects["light"] = state.get("light")
@@ -308,6 +328,8 @@ class Loop:
                 if check:
                     result = {"status": check[0], "reason": check[1], "ticks": state["tick"] - first["tick"],
                               "rounds": round_no - first_round + 1, "life": state["body"]["life"], "goal_id": goal_id}
+                    if check[0] in ("failed", "timeout"):
+                        result["blockers"] = failure_blockers
                     if next_goal is not None and check[0] == "done" and not goal.get("waiting"):
                         if on_result:
                             on_result(result, state)

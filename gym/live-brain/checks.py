@@ -26,7 +26,7 @@ def window(x0=0, y0=0, w=30, h=12):
     for row in tiles[9:]:
         row[:] = [0] * w
     return {"x0": x0, "y0": y0, "w": w, "h": h, "tile": tiles, "liquid": blank(0), "shape": blank(0),
-            "liquid_kind": blank(0), "wall": blank(0), "seen": blank(True),
+            "liquid_kind": blank(0), "wall": blank(0), "seen": blank(True), "can_break": blank(True),
             "kinds": {"0": {"name": "Dirt", "solid": True, "solid_top": False, "pick_damage": 70}}}
 
 
@@ -48,12 +48,158 @@ def map_check():
     original = copy.deepcopy(box)
     m.update(box)
     assert m.raw_tile(3, 2) == -2 and not m.empty(3, 2)
-    assert m.shape(4, 9) == 5 and m.cells[(3, 8)][2:] == (91, 2, 0)
+    assert m.shape(4, 9) == 5 and m.cells[(3, 8)][2:5] == (91, 2, 0)
     assert not m.update(box) and m.version == 1
     assert box == original
     m.update(window(x0=15))
     assert m.shape(4, 9) == 5
     assert m.tile(4, 9, dug={(4, 9)}) == -1 and m.raw_tile(4, 9) == 0
+
+
+def exploration_route_check():
+    state = json.loads((ROOT / "gym/episodes/quarry/observation.json").read_text())
+    _, kit = fast.items_for(state, {})
+    phys = dict(state["physics"], defense=state["body"]["defense"])
+    box = window(w=30, h=24)
+    for r in range(15, 20):
+        for c in range(10, 14):
+            box["seen"][r][c] = False
+    world = Map(); world.update(box)
+    start = dict(state["body"], x=32, y=102, vx=0, vy=0, ground=True, wet=False)
+    area = (10, 15, 13, 19)
+    route = pathfinder.plan(world, (10, 15), start, kit, phys, search_area=area)
+    assert route.explore and route.ticks is not None and route.way
+    end = route.way[-1]["to"]
+    assert route.at(*end) == 0
+    assert any(world.raw_tile(x, y) == -2 and goals.area_contains(area, x, y)
+               for y in range(end[1] - 3, end[1] + 3) for x in range(end[0] - 1, end[0] + 3))
+    assert any(e.get("dig") for e in route.way), route.way
+    # A landing inside fully observed terrain cannot be an exploration destination.
+    known = window(w=30, h=24)
+    for r in range(9, 17):
+        for c in range(10, 18):
+            known["tile"][r][c] = -1
+    world = Map(); world.update(known)
+    prices = pathfinder.Prices(phys, kit)
+    grid = pathfinder.Grid(world, 0, 0, 30, 24, prices)
+    seeds, built = pathfinder.frontier(grid, prices, 15, 20)
+    assert not seeds and not built
+
+
+def platform_support_order_check():
+    state = json.loads((ROOT / "gym/episodes/quarry/observation.json").read_text())
+    _, kit = fast.items_for(state, {})
+    kit.update(platform={"use_time": 10}, platforms=4)
+    prices = pathfinder.Prices(state["physics"], kit)
+    world = Map(); world.update(window())
+    grid = pathfinder.Grid(world, 0, 0, 30, 12, prices)
+    cells = grid.rungs(12, 5, prices)
+    assert cells == [(12, 8), (12, 7), (12, 6), (12, 5)]
+    put = {}
+    for cell in cells:
+        assert fast.hands.has_support(cell, world.wall, lambda x, y: world.holds(x, y, put)), cell
+        put[cell] = 19
+
+
+def exploration_no_reveal_check():
+    from unittest.mock import patch
+    state = observation()
+    state["cells"]["seen"][8][4] = False
+    state["physics"].update(run_top=3, run_acc=.08, run_slow=.2, acc_run=3,
+                            jump_hold=15, jump_speed=5.01, gravity=.4, fall_top=10, range_x=5, range_y=4)
+    state["body"]["breath"] = 200
+    class IO:
+        def call(self, path, payload=None, timeout=None):
+            if path.startswith("/state?"):
+                state["tick"] += 16
+                return copy.deepcopy(state)
+            if path == "/run":
+                state["execution"]["active"] = {"command_id": payload["command_id"],
+                                                   "applied_tick": payload["start_tick"] + 1}
+                return {"now": state["tick"]}
+            return {}
+    with patch.object(fast, "project", side_effect=lambda state, *_: state), \
+            patch.object(fast, "decide", return_value={"steps": [{"ticks": 15, "keys": []}]}), \
+            patch("loop.time.sleep"):
+        result = Loop(IO(), draw=False, world_name="Gym").run(
+            {"kind": "search", "area": (4, 8, 4, 8), "tile": "Heart", "limit_ticks": 120}, lambda _: None)
+    assert result["status"] == "timeout" and result["ticks"] >= 120
+    assert result["rounds"] >= 4  # Route arrival alone never completes a search.
+
+
+def cell_mining_permission_check():
+    box = window()
+    box["can_break"][9][3] = False
+    world = Map(); world.update(box)
+    assert not world.can_break(3, 9) and world.can_break(4, 9)
+    assert world.raw_tile(3, 9) == world.raw_tile(4, 9)
+    reason = goals.blockers({"kind": "change", "cells": [[3, 9, -1]]}, observation(), world)
+    assert reason[0]["source"] == "game_mining_permission"
+    version = world.version
+    box["can_break"][9][3] = True
+    world.update(box)
+    assert world.can_break(3, 9) and world.version == version + 1
+    assert not world.can_break(-10, -10)
+
+
+def quantity_shortfall_check():
+    s = observation();world = Map();world.update(s["cells"])
+    goal = {"kind": "quantity", "item": "Wood", "count": 20, "gain": False, "limit_ticks": 300}
+    s["bag"] = [{"name": "Wood", "stack": 19}]
+    s["items"] = [{"name": "Wood", "stack": 1}]
+    assert goals.check(goal, s, world, 0, s["tick"]) is None
+    s["items"] = []
+    failure = goals.check(goal, s, world, 0, s["tick"])
+    assert failure[0] == "failed" and "19/20" in failure[1]
+    s["bag"][0]["stack"] = 20
+    assert goals.check(goal, s, world, 0, s["tick"])[0] == "done"
+
+
+def quantity_total_check():
+    s = observation();world = Map();world.update(s["cells"])
+    s["bag"] = [{"name": "Wood", "stack": 25}]
+    s["items"] = [{"name": "Wood", "stack": 14}]
+    goal = {"kind": "quantity", "item": "Wood", "count": 20, "limit_ticks": 300}
+    baseline = goals.begin(goal, s)
+    assert baseline == 0 and goals.check(goal, s, world, baseline, s["tick"])[0] == "done"
+    goal["count"] = 39
+    assert goals.check(goal, s, world, goals.begin(goal, s), s["tick"]) is None
+    s["bag"][0]["stack"] = 39;s["items"] = []
+    assert goals.check(goal, s, world, baseline, s["tick"])[0] == "done"
+    assert goals.begin(dict(goal, gain=True), s) == 39
+
+
+def excavation_route_check():
+    phys = dict(run_top=3, run_acc=.08, run_slow=.2, acc_run=3, jump_hold=15,
+                jump_speed=5.01, gravity=.4, fall_top=10, range_x=5, range_y=4)
+    kit = {"pick": {"pick": 35, "use_time": 15, "tile_boost": -1}, "target_boost": -1}
+    world = Map();world.update(window(h=20))
+    start = body.start(32, 102)
+    route = pathfinder.plan(world, (15, 13), start, kit, phys, approach=True)
+    assert not route.explore and route.ticks is not None
+    assert any(edge.get("dig") for edge in route.way)
+    x, y = route.way[-1]["to"]
+    assert fast.hands.in_reach({"x": x*16, "y": (y+1)*16-42, "w": 20, "h": 42}, (15, 13), phys, -1)
+    # A cell-aligned endpoint can be in reach while the actual body is just outside it.
+    offset = body.start(9*16 + .004, 102)
+    route = pathfinder.plan(world, (5, 10), offset, kit, phys, approach=True)
+    assert not fast.hands.in_reach(offset, (5, 10), phys, -1)
+    assert route.at(*route.node_of(offset)) > 0
+    box = window()
+    box["tile"][9][8] = box["tile"][9][9] = -1
+    box["tile"][6][8] = 0
+    world = Map();world.update(box)
+    price = pathfinder.Prices(phys, kit)
+    grid = pathfinder.Grid(world, 0, 0, 30, 12, price)
+    step = next(edge for u, cost, edge in pathfinder.preds(grid, price, (8, 9), {}) if u == (9, 8))
+    assert step[0] == "dig" and (8, 6) in step[2]
+    shaft = window(h=16)
+    for row in (10, 11):
+        shaft["tile"][row][8] = shaft["tile"][row][9] = -1
+    world = Map();world.update(shaft)
+    grid = pathfinder.Grid(world, 0, 0, 30, 16, price)
+    fall = next(edge for u, cost, edge in pathfinder.preds(grid, price, (8, 11), {}) if u == (8, 8))
+    assert fall[0] == "dig_down" and set(fall[1]) == {(8, 9), (9, 9)}
 
 
 def goal_check():
@@ -72,6 +218,46 @@ def goal_check():
     assert goals.check(kill, s, m, 0, s["tick"])[0] == "done"
     s["body"]["dead"] = True
     assert goals.check(kill, s, m, 0, s["tick"])[0] == "died"
+
+
+def failure_explanation_check():
+    from unittest.mock import patch
+    state = observation()
+    state["physics"].update(range_x=5, range_y=4)
+    state["bag"] = [{"name": "Dirt Block", "stack": 10, "place_tile": 0, "block_tile": True, "tile_boost": 0}]
+    goal = {"kind": "change", "cells": [[6, 6, 0]], "limit_ticks": 60}
+    world = Map(); world.update(state["cells"])
+    missing_support = goals.blockers(goal, state, world)
+    assert "nothing holds it" in missing_support[0]["reason"]
+    assert goals.check(goal, state, world, state["tick"], state["tick"]) is None
+    class IO:
+        def call(self, path, payload=None, timeout=None):
+            return copy.deepcopy(state) if path.startswith("/state") else {}
+    with patch.object(goals, "check", return_value=("timeout", "game tick budget reached")):
+        result = Loop(IO(), draw=False).run(goal, lambda _: None)
+    assert result["status"] == "timeout" and result["blockers"] == missing_support
+    # Unknown terrain cannot establish a missing anchor.
+    state["cells"]["seen"][6][7] = False
+    unknown = Map(); unknown.update(state["cells"])
+    assert goals.blockers(goal, state, unknown) == []
+    # Cuttable plants are cleared by placement, rather than treated as a solid obstruction.
+    state["cells"]["seen"][6][7] = True
+    state["cells"]["tile"][6][6] = 3
+    state["cells"]["tile"][7][6] = 0
+    state["cells"]["kinds"]["3"] = {"name": "Plants", "solid": False, "solid_top": False, "cut": True}
+    planted = Map(); planted.update(state["cells"])
+    assert goals.blockers(goal, state, planted) == []
+    state["cells"]["kinds"]["10"] = {"name": "ClosedDoor", "solid": True, "solid_top": False}
+    for row in range(5, 8):
+        state["cells"]["tile"][row][9] = 10
+    state["cells"]["tile"][7][8] = state["cells"]["tile"][7][10] = 0
+    door = {"kind": "interact", "operation": "door", "tile": "OpenDoor", "cell": [9, 6]}
+    blocked = Map(); blocked.update(state["cells"])
+    facts = goals.blockers(door, state, blocked)
+    assert facts[0]["blocking_cells"] == [[8, 7, "Dirt"], [10, 7, "Dirt"]]
+    state["cells"]["tile"][7][10] = -1
+    one_side = Map(); one_side.update(state["cells"])
+    assert goals.blockers(door, state, one_side) == []
 
 
 def route_check():
@@ -199,7 +385,8 @@ def candidate_check():
     s, m = observation(), Map()
     m.update(s["cells"])
     pumpkin = {"slot": 3, "id": 1725, "name": "Pumpkin", "stack": 8, "place_tile": 251,
-               "block_tile": True, "pick": 0, "axe": 0, "heal": 0, "hook": False}
+               "block_tile": True, "pick": 0, "axe": 0, "heal": 0, "hook": False,
+               "value": 0, "use_time": 15, "tile_boost": 0}
     wood = dict(pumpkin, slot=7, id=9, name="Wood", place_tile=30)
     goal = {"kind": "reach", "cell": (14, 8), "preserve": {"Wood": 1}}
     s["bag"] = [wood, pumpkin]
@@ -208,8 +395,34 @@ def candidate_check():
     pumpkin["slot"], wood["slot"] = wood["slot"], pumpkin["slot"]
     assert fast.items_for(s, goal)[1]["block"]["name"] == "Pumpkin"
     moves = list(fast.candidates(s, m, goal, None, {"put": [(4, 8)]}, bag))
-    assert {use[1]["name"] for _, use in moves if use} == {"Pumpkin", "Wood"}
+    assert {use[1]["name"] for _, use in moves if use} == {"Pumpkin"}
     assert fast.items_for(dict(s, bag=[wood]), goal)[1]["block"]["name"] == "Wood"
+
+
+def material_choice_check():
+    s, world = observation(), Map();world.update(s["cells"])
+    dirt = dict(slot=3, id=2, name="Dirt Block", stack=22, place_tile=0, block_tile=True,
+                value=0, use_time=10, tile_boost=0, pick=0, axe=0, heal=0, hook=False)
+    ore = dict(dirt, slot=9, id=12, name="Copper Ore", stack=6, place_tile=7, value=250, use_time=15)
+    goal = {"kind": "reach", "cell": [14, 8]}
+    take = lambda bag: fast.materials(goal, bag, lambda i: i["block_tile"])
+    assert take([ore, dirt]) == [dirt]
+    assert fast.items_for(dict(s, bag=[ore, dirt]), goal)[1]["block"] == dirt
+    # A sole unfamiliar material remains usable; extra stock, reach or speed keeps an alternative.
+    assert take([ore]) == [ore]
+    for extra in ({"stack": 23}, {"tile_boost": 1}, {"use_time": 5}):
+        assert len(take([dirt, dict(ore, **extra)])) == 2
+    unknown = dict(ore);unknown.pop("value")
+    assert unknown in take([dirt, unknown])
+    # Material prices must not change selection of movement equipment.
+    hook = dict(dirt, hook=True, block_tile=False, place_tile=-1, value=1000, stack=1)
+    other_hook = dict(hook, id=3, value=0)
+    assert fast.items_for(dict(s, bag=[hook, other_hook]), goal)[1]["hook"] == hook
+    # Named construction goals keep their requested tile, regardless of its price.
+    s["bag"] = [dirt, ore]
+    goal = {"kind": "change", "cells": [[4, 8, 7]]}
+    uses = list(fast.tile_uses(goal["cells"], world, s["bag"]))
+    assert len(uses) == 1 and uses[0][1] == ore
 
 
 def handoff_check():
@@ -645,8 +858,64 @@ def loop_check():
     original = copy.deepcopy(state)
     outcome = Loop(IO(), draw=False, world_name="Gym").run(goal, lambda r: events.append(r["type"]))
     assert outcome["status"] == "done"
-    assert events == ["/state?w=90&h=50&attack_shapes=1&shape_step=16", "round", "round_end", "/run/cancel", "cleanup"]
+    assert events == ["/state?w=90&h=50&attack_shapes=1&shape_step=16", "goal", "round", "round_end", "/run/cancel", "cleanup"]
     assert state == original
+
+
+def chest_loot_check():
+    from unittest.mock import patch
+
+    # Run the actual interaction chooser and loop: opening must not end the goal.
+    def attempt(receipt, take=True):
+        state = observation()
+        state["body"].update(chest=-1, item_animation=0, item_time=0, breath=200, defense_eff=.5)
+        state["physics"].update(range_x=5, range_y=4)
+        state.update(progress={"life_max_perm": 100}, strength=1, shots=[])
+        calls, rows = [], []
+        class IO:
+            def call(self, path, payload=None, timeout=None):
+                calls.append((path, payload))
+                if path.startswith("/state?"):
+                    state["tick"] += 16
+                    return copy.deepcopy(state)
+                if path == "/run":
+                    state["body"]["chest"] = 7
+                    state["execution"]["active"] = {"command_id": payload["command_id"],
+                                                       "applied_tick": payload["start_tick"] + 1}
+                    return {"now": state["tick"]}
+                if path == "/run/cancel":
+                    state["execution"]["active"] = None
+                if path == "/chest":
+                    assert state["body"]["chest"] == 7 and payload == {"take": "all", "cell": (3, 8)}
+                    state["body"]["chest"] = -1
+                    if receipt.get("took"):
+                        state["bag"].append({"name": "Torch", "stack": 10})
+                    return receipt
+                return {}
+
+        with patch.object(pathfinder, "breathable_plan", return_value=None), \
+                patch.object(fast, "project", side_effect=lambda state, *_: state), \
+                patch("loop.time.sleep"):
+            goal = {"kind": "interact", "operation": "chest", "cell": (3, 8), "limit_ticks": 120}
+            if not take:
+                goal["take"] = False
+            outcome = Loop(IO(), draw=False, world_name="Gym").run(goal, rows.append)
+        return outcome, calls, state, rows
+
+    outcome, calls, state, rows = attempt({"took": ["Torch x10"], "remaining": []})
+    assert outcome["status"] == "done" and "Torch x10" in outcome["reason"]
+    assert goals.quantity(state, "Torch") == 10
+    assert [p for p, _ in calls].index("/run") < [p for p, _ in calls].index("/chest")
+    assert any(r["type"] == "round" and r["decision"].get("label") == "take chest loot" for r in rows)
+    outcome, _, _, _ = attempt({"took": ["Torch x10"], "remaining": ["Wood x5"]})
+    assert outcome["status"] == "failed" and "Wood x5" in outcome["reason"]
+    assert attempt({"took": [], "remaining": []})[0]["reason"] == "chest is empty"
+    assert attempt({"took": ["Torch x10"]})[0]["status"] == "failed"  # An old mod cannot falsely confirm completion.
+    assert goals.chest_result({"stopped": "the open chest is not the requested chest"})[0] == "failed"
+    outcome, calls, _, _ = attempt({}, take=False)
+    assert outcome["status"] == "done" and "/chest" not in [p for p, _ in calls]
+    assert goals.chest_result({"stopped": "the open chest is not the requested chest"}) == (
+        "failed", "the open chest is not the requested chest")
 
 
 def death_with_pending_command_check():
@@ -930,6 +1199,26 @@ def fighting_heal_check():
     state["hits"] = [{"tick": 115, "damage": 60}]
     waste = dict(result, body=dict(state["body"], life=200), healed=10)
     assert fast.healing_value(state, waste, use, 300) == 0
+
+
+def shared_combat_safety_check():
+    state = observation()
+    safe = dict(body=state["body"], damage=0, healed=0, dealt=12, contacts=0, pressure=0,
+                ticks=60, shots=0, measurement={"remaining": 2}, hits_on={})
+    for kind in goals.KINDS:
+        goal = {"kind": kind, "area": [0, 0, 29, 11]}
+        rank = lambda result, eta: fast.rank(goal, state, result, eta, 0, 0, 0)
+        hurt_progress = dict(safe, damage=30, dealt=20, measurement={"remaining": 0})
+        close_progress = dict(safe, pressure=1, dealt=20, measurement={"remaining": 0})
+        assert rank(safe, 100) < rank(hurt_progress, 60), kind
+        if kind in ("maintain", "defeat"):
+            assert rank(safe, 100) < rank(close_progress, 60), kind
+        else:
+            assert rank(close_progress, 60) < rank(safe, 100), kind
+    # The recorded jump deals 16 over 82 ticks; standing deals 12 over 60.
+    wait = {"kind": "maintain", "area": [0, 0, 29, 11]}
+    jump = dict(safe, dealt=16, ticks=82)
+    assert fast.rank(wait, state, safe, 0, 0, 0, 0) < fast.rank(wait, state, jump, 0, 0, 0, 0)
 
 
 def ranged_spacing_check():
@@ -1265,15 +1554,17 @@ def angled_stab_check():
 
 
 if __name__ == "__main__":
-    checks = [map_check, goal_check, route_check, quarry_route_check, route_progress_check, pillar_reach_check,
-              forecast_floor_check, air_budget_check, candidate_check, handoff_check,
+    checks = [map_check, exploration_route_check, platform_support_order_check, exploration_no_reveal_check,
+              cell_mining_permission_check, quantity_shortfall_check, quantity_total_check, excavation_route_check,
+              goal_check, failure_explanation_check, route_check, quarry_route_check, route_progress_check, pillar_reach_check,
+              forecast_floor_check, air_budget_check, candidate_check, material_choice_check, handoff_check,
               projectile_handoff_check, attack_shape_check, attack_shape_handoff_check, firing_duration_check,
               protection_counter_check, clearance_reuse_check, attack_patch_check, spacing_path_check, enemy_observation_check,
               friendly_projectile_check, knockback_check, combat_forecast_check, movement_reuse_check,
               gear_hurt_check, hostile_penetration_check,
-              ongoing_damage_check, loop_check, death_with_pending_command_check, waiting_check,
+              ongoing_damage_check, loop_check, chest_loot_check, death_with_pending_command_check, waiting_check,
               review_timing_check, waiting_handoff_check, weapon_resources_check, consumable_use_check,
-              review_lead_check, fighting_distance_check, fighting_heal_check, potion_resume_check,
+              review_lead_check, fighting_distance_check, fighting_heal_check, shared_combat_safety_check, potion_resume_check,
               ranged_spacing_check, fighting_controls_check, homing_check, summon_count_check,
               bullet_reuse_check, forecast_budget_check, game_clock_submission_check]
     from motion_checks import CHECKS

@@ -12,6 +12,7 @@ namespace AgentIO
 	// The title screen without clicks, for a mod rebuilt from the command line (dotnet tModLoader.dll -server -build):
 	//   POST /menu                                   the world saved and left for the title screen
 	//   POST /reload                                 at the title screen: the mods loaded again from disk
+	//   POST /newplayer {"name":"Name","difficulty":0} create a character, including at the title screen
 	//   POST /enter {"player": "Name", "world": "Gym"}   at the title screen: that character into that world
 	// The game's routes run in its world update (Server.OnGame); these run on its main thread through
 	// Main.QueueMainThreadAction, which the title screen runs too.
@@ -44,6 +45,8 @@ namespace AgentIO
 			m.Invoke(null, null);
 			return Json.Of(new Dictionary<string, object> { ["reloading"] = true });
 		});
+
+		public static string NewPlayer(string body) => OnMain(() => Craft.NewPlayer(body));
 
 		public static string Enter(string body) => OnMain(() =>
 		{

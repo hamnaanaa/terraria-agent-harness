@@ -179,7 +179,7 @@ namespace AgentIO
 				case "/craft": return OnGame(_ => Craft.Make(body), 5000);
 				case "/bag": return OnGame(_ => Craft.Swap(body), 3000);      // an item dragged into the hotbar
 				case "/wear": return OnGame(_ => Craft.Wear(body), 3000);     // armour or an accessory put on
-				case "/newplayer": return OnGame(_ => Craft.NewPlayer(body), 10000);   // a fresh character saved to disk
+				case "/newplayer": return Menu.NewPlayer(body);   // character creation also works at the title screen
 				case "/swing": return OnGame(_ => SwingRecorder.Handle(body), 3000);   // the engine's melee hitbox per tick
 				case "/chest": return OnGame(_ => Craft.Chest(body), 5000);
 				case "/trash": return OnGame(_ => Craft.Trash(body), 3000);      // named items into the trash slot

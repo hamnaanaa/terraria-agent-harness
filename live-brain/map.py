@@ -11,7 +11,6 @@ class Cells:
         self.pick = {int(k): v.get("pick_damage", 0) for k, v in kinds.items()}
         self.no_attach = {int(k) for k, v in kinds.items() if v.get("no_attach")}
         self.cut = {int(k) for k, v in kinds.items() if v.get("cut")}          # cut by a block set into the cell
-        self.can_break = {int(k): v.get("can_break", True) for k, v in kinds.items()}
         self.names = {int(k): v["name"] for k, v in kinds.items()}
         self.hurt_kind = {int(k): tiles.kind(v["name"]) for k, v in kinds.items() if tiles.kind(v["name"])}
         # a platform the hands may set before one was ever seen: the game's own flags for tile 19 (solid, solid top)
@@ -91,6 +90,7 @@ class Map(Cells):
         changed = {}
         seen = window["seen"]
         shape = window["shape"]
+        permissions = window.get("can_break")
         for r, row in enumerate(window["tile"]):
             for c, tile in enumerate(row):
                 if not seen[r][c] or tile == -2:
@@ -98,7 +98,8 @@ class Map(Cells):
                 cell = (window["x0"] + c, window["y0"] + r)
                 amount = window["liquid"][r][c]
                 value = (tile, shape[r][c], amount, window["liquid_kind"][r][c] if amount else -1,
-                         window["wall"][r][c])
+                         window["wall"][r][c], permissions[r][c] if permissions is not None else
+                         kinds.get(str(tile), {}).get("can_break", True))  # Archived observations used type-level permission.
                 before = self.cells.get(cell)
                 if value != before:
                     changed[cell] = (before, value)
@@ -121,3 +122,7 @@ class Map(Cells):
     def wall(self, x, y):
         value = self.cells.get((x, y))
         return value[4] if value else 0
+
+    def can_break(self, x, y):
+        value = self.cells.get((x, y))
+        return bool(value and len(value) > 5 and value[5])

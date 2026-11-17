@@ -65,11 +65,8 @@ def reach_near(at, limit_ticks=1200):
     return goal, verify
 
 
-def open_chest(at):
+def open_chest(at, take=True):
     target = cell(*at)
-    return ({"kind": "interact", "operation": "chest", "cell": target, "limit_ticks": 1200},
-            lambda a, b: b["body"]["chest"] >= 0 and a["body"]["chest"] != b["body"]["chest"])
-
-
-def loot_chest():
-    return ("/chest", {"take": "all"}, lambda a, b: any(count(b, i["name"]) > count(a, i["name"]) for i in b["bag"]))
+    return ({"kind": "interact", "operation": "chest", "cell": target, "take": take, "limit_ticks": 1200},
+            lambda a, b: (any(count(b, i["name"]) > count(a, i["name"]) for i in b["bag"]) if take else
+                          b["body"]["chest"] >= 0 and a["body"]["chest"] != b["body"]["chest"]))

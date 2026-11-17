@@ -241,7 +241,7 @@ namespace AgentIO
 
 		public static Dictionary<string, object> Item(Item it, int slot) => new()
 		{
-			["slot"] = slot, ["id"] = it.type, ["name"] = it.Name, ["stack"] = it.stack,
+			["slot"] = slot, ["id"] = it.type, ["name"] = it.Name, ["stack"] = it.stack, ["value"] = it.value,
 			["use_time"] = it.useTime, ["use_anim"] = it.useAnimation, ["use_style"] = it.useStyle,
 			["place_tile"] = it.createTile, ["tile_boost"] = it.tileBoost,
 			// a building block, by the game's own tables: the tile it places is solid and one cell (not a furnace, a
@@ -410,17 +410,20 @@ namespace AgentIO
 		{
 			var tile = new int[h][]; var shape = new int[h][]; var liquid = new int[h][]; var kind = new int[h][];
 			var wall = new int[h][]; var seen = new int[h][]; var fx = new int[h][]; var fy = new int[h][];
+			var canBreak = new bool[h][];
 			var kinds = new Dictionary<string, object>();
 			for (int r = 0; r < h; r++)
 			{
 				tile[r] = new int[w]; shape[r] = new int[w]; liquid[r] = new int[w]; kind[r] = new int[w];
 				wall[r] = new int[w]; seen[r] = new int[w]; fx[r] = new int[w]; fy[r] = new int[w];
+				canBreak[r] = new bool[w];
 				for (int c = 0; c < w; c++)
 				{
 					int x = x0 + c, y = y0 + r;
 					if (!WorldGen.InWorld(x, y)) { tile[r][c] = -2; continue; }
 					var t = Main.tile[x, y];
 					tile[r][c] = t.HasTile ? t.TileType : -1;
+					canBreak[r][c] = !t.HasTile || WorldGen.CanKillTile(x, y);
 					shape[r][c] = t.IsHalfBlock ? 5 : (int)t.Slope;
 					liquid[r][c] = t.LiquidAmount;
 					kind[r][c] = t.LiquidType;
@@ -438,9 +441,9 @@ namespace AgentIO
 							// a plant, a vine, a cobweb: a block set into its cell cuts it (the game's tileCut; Player.cs's placement
 							// condition takes a cut tile as an empty cell)
 							["cut"] = Main.tileCut[t.TileType],
-							// what one hit of the bag's best pickaxe does to it, by the game's own function, and whether
-							// the game lets it break at all (a block under a tree, a chest or an altar does not)
-							["pick_damage"] = PickDamage(x, y), ["can_break"] = WorldGen.CanKillTile(x, y),
+							// what one hit of the bag's best pickaxe does to it, by the game's own function.
+							// Permission is per cell: a block under a tree/chest can be protected.
+							["pick_damage"] = PickDamage(x, y),
 							["drops"] = Drops(t.TileType),     // the item it breaks into, or null (below)
 						};
 				}
@@ -449,6 +452,7 @@ namespace AgentIO
 			{
 				["x0"] = x0, ["y0"] = y0, ["w"] = w, ["h"] = h, ["tile"] = tile, ["shape"] = shape, ["liquid"] = liquid,
 				["liquid_kind"] = kind, ["wall"] = wall, ["seen"] = seen, ["kinds"] = kinds, ["fx"] = fx, ["fy"] = fy,
+				["can_break"] = canBreak,
 			};
 		}
 

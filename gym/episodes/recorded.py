@@ -12,21 +12,27 @@ def read(folder, file):
     return json.loads((HERE / folder / (file + ".json")).read_text())
 
 
-def episode(folder, case, text, verify, *, goal=None):
+def episode(folder, case, text, verify, *, goal=None, site=None):
     recording = read(folder, "starts")
     start = recording[case]
     x0, y0, x1, y1 = recording["box"]
-    sx, sy = G.SITE
+    sx, sy = site or start.get("site", G.SITE)
     dx, dy = sx - x0, sy - y0
     observation = read(folder, start["observation"]) if "observation" in start else None
 
     def setup():
         G.in_gym()
         G.call("/run/cancel", {}, timeout=2)
-        G.gym(butcher=True, spawns=0, freeze="noon", background=True)
+        G.gym(butcher=True, spawns=0, freeze=start.get("freeze", "noon"), background=True,
+              feet=G.state(w=2, h=2)["spawn"], clear_projectiles=True)
         tiles = read(folder, "terrain")
         if "terrain_patch" in start:
             tiles += read(folder, start["terrain_patch"])
+        # Isolate the copied terrain from falling tiles and liquid in older Gym scenes.
+        right, bottom = max(G.W - 1, x1 - x0) + 5, max(G.H - 1, y1 - y0) + 4
+        frame = {(x, y) for x in range(-5, right + 1) for y in (-7, bottom)}
+        frame.update((x, y) for x in (-5, right) for y in range(-7, bottom + 1))
+        tiles += [[x, y, 1, 0, 0, 0, 0, 0, 0] for x, y in frame]
         G.call("/stamp", {"x0": sx, "y0": sy, "tiles": tiles,
                           "reveal": observation is None,
                           "clear": [sx - 4, sy - 6, sx + max(G.W - 1, x1 - x0) + 4,
@@ -48,12 +54,16 @@ def episode(folder, case, text, verify, *, goal=None):
         dials = dict(at=[b["x"] + dx * 16, b["y"] + dy * 16], velocity=[b["vx"], b["vy"]],
                      wear=start.get("wear", []), bag=start["bag"], life_max=100, heal=True, life=b["life"], breath=b["breath"],
                      clear_buffs=True)
-        if "enemy" in start:
-            e = dict(start["enemy"])
+        spawn = []
+        enemies = start.get("enemies", [start["enemy"]] if "enemy" in start else [])
+        for original in enemies:
+            e = dict(original)
             e.update(x=e["x"] + dx * 16, y=e["y"] + dy * 16)
-            dials["spawn"] = [[e["name"], int(e["x"] // 16), int(e["y"] // 16), e]]
+            spawn.append(["BlueSlime" if e["id"] == 1 else e["name"], int(e["x"] // 16), int(e["y"] // 16), e])
+        if spawn:
+            dials["spawn"] = spawn
         ack = G.gym(**dials)
-        if "enemy" in start and not any(s.startswith("spawned ") for s in ack["done"]):
+        if spawn and sum(s.startswith("spawned ") for s in ack["done"]) != len(spawn):
             raise RuntimeError("the recorded enemy did not spawn")
 
     if "steps" in start:
@@ -147,4 +157,43 @@ QUARRY = {
         lambda before, after: not after["body"]["dead"]
             and before["deaths"]["count"] == after["deaths"]["count"]),
 }
-EPISODES = LAKE | VULTURE | QUARRY
+def requested_cells(folder):
+    source = read(folder, "starts")
+    goal = source["replay"]["goal"]
+    site = source["replay"].get("site", G.SITE)
+    dx, dy = site[0] - source["box"][0], site[1] - source["box"][1]
+    cells = goal.get("cells")
+    if cells:
+        return [(x + dx, y + dy) for x, y, _ in cells]
+    x0, y0, x1, y1 = goal["area"]
+    return [(x + dx, y + dy) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)]
+
+
+def native_search_covered(before, after):
+    cells = requested_cells("exploration")
+    x0, y0 = min(x for x, y in cells), min(y for x, y in cells)
+    box = G.state(x0=x0, y0=y0, w=max(x for x, y in cells)-x0+1,
+                  h=max(y for x, y in cells)-y0+1)["cells"]
+    found = any(seen and box["kinds"].get(str(tile), {}).get("name") == "Heart"
+                for visible, tiles in zip(box["seen"], box["tile"]) for seen, tile in zip(visible, tiles))
+    return not after["body"]["dead"] and (found or all(all(row) for row in box["seen"]))
+
+
+def native_iron_cleared(before, after):
+    cells = requested_cells("platform_climb")
+    x0, y0 = min(x for x, y in cells), min(y for x, y in cells)
+    box = G.state(x0=x0, y0=y0, w=max(x for x, y in cells)-x0+1,
+                  h=max(y for x, y in cells)-y0+1)["cells"]
+    return not after["body"]["dead"] and all(box["tile"][y-y0][x-x0] == -1 for x, y in cells)
+
+
+NAVIGATION = {
+    "recorded_exploration": episode("exploration", "replay",
+        "Search the recorded terrain without enemies. Reveal the patch or find a life crystal.",
+        native_search_covered,
+        goal=dict(read("exploration", "starts")["replay"]["goal"], limit_ticks=10800)),
+    "recorded_platform_climb": episode("platform_climb", "replay",
+        "Climb the recorded terrain without enemies, reach the iron and mine its twelve tiles.",
+        native_iron_cleared),
+}
+EPISODES = LAKE | VULTURE | QUARRY | NAVIGATION

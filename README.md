@@ -16,9 +16,9 @@ This repo contains the pieces of a Terraria agent harness for real-time play and
 
 ## What’s here today
 
-The live brain can travel, mine, build, collect items, fight, craft and interact with doors and chests. The Gym includes 70 numbered scenarios, seven episodes copied from real play, and separate enemy and weapon tests. Runs record the state, candidate moves, chosen inputs and timings.
+The live brain can travel, mine, build, collect items, fight, craft and interact with doors and chests. The Gym includes 70 numbered scenarios, nine episodes copied from real play, and separate enemy and weapon tests. Runs record the state, candidate moves, chosen inputs and timings.
 
-This live brain has won prepared fights against the Eye of Cthulhu, Wall of Flesh and nighttime Empress of Light. We supplied the gear, arenas and goals for those fights. The slow brain is the next part to build; attended play currently uses goals chosen by an assistant.
+This live brain has won prepared fights against the Eye of Cthulhu, Wall of Flesh and nighttime Empress of Light. We supplied the gear, arenas and goals for those fights. The [slow-brain instructions](slow-brain) let a fresh coding-assistant subagent choose goals from the actual game state and feed them to the live brain.
 
 ## Set up AgentIO
 
@@ -52,6 +52,10 @@ python3 gym/combat/observed_motion.py
 The [combat Gym](gym/combat) covers 18 common-enemy cases and 29 weapon cases, with individual case selection and optional recording. It also contains the collector used to compare scripted inputs with the live brain. These suites run separately from the 70 numbered scenarios.
 
 The loop plans replacement inputs 15 game ticks ahead, about 250 ms when the game runs at 60 ticks per second. It measures each step and shares repeated movement predictions within that round. AgentIO checks the actual game tick before accepting an input script.
+
+## Let an agent plan the game
+
+Ask your coding assistant to follow [slow-brain/README.md](slow-brain/README.md) to start or resume a game. It covers launching a fresh planning subagent with **high reasoning** and keeping the live brain supplied with goals.
 
 ## Give the live brain a goal
 

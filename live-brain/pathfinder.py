@@ -219,7 +219,7 @@ class Grid:
                 return None                                # digging a spike or a hot block means touching it
             if any(kx0 <= x0 + c <= kx1 and ky0 <= y0 + r <= ky1 for kx0, ky0, kx1, ky1 in keep):
                 return None                                # a zone kept as it is (a real world's home)
-            return prices.dig(pk.get(t, 0)) if cb.get(t, True) else None
+            return prices.dig(pk.get(t, 0)) if cb(x0 + c, y0 + r) else None
         self.dig = [[dig_of(t, c, r) for c, t in enumerate(row)] for r, row in enumerate(T)]
         self._fits, self._free = {}, {}
         self._jump_masks = None
@@ -277,7 +277,7 @@ class Grid:
                 return None
             cells.append((rc, y))
             if self.held(rc, y):
-                return cells
+                return cells[::-1]  # Build from the existing support upward.
         return None
 
     def platform_steps(self, c, r, P):
@@ -532,31 +532,37 @@ def landing_steps(g, P, c, r, max_drop):
                 yield (nx, row), len(cells) * P.place + P.walk + P.fall[drop], ("landing", cells)
 
 
-def frontier(g, P, gx, gy):
-    """Price the places from which the character can see more terrain.
+def frontier(g, P, gx, gy, search_area=None):
+    """Price standing places that border unknown cells, optionally inside a requested search area.
     A stop that needs building can only be reached by the move that builds it."""
     out, built_stops, T = [], {}, g.tile
     reach = int(P.phys["range_y"] + P.block_boost + P.phys.get("block_range", 0) - 2) if P.blocks else 0
     max_drop = min(P.safe, reach)
     def price(c, r):
         return P.walk * (abs(c + g.x0 - gx) + abs(r + g.y0 - gy))
+    def unknown_near(c, r):
+        edge = [(x, y) for x in (c - 1, c + 2) for y in range(r - 2, r + 1)]
+        edge += [(x, y) for x in (c, c + 1) for y in (r - 3, r + 1)]
+        return any(0 <= x < g.w and 0 <= y < g.h and T[y][x] == -2 and (search_area is None or
+                   search_area[0] <= x + g.x0 <= search_area[2] and
+                   search_area[1] <= y + g.y0 <= search_area[3])
+                   for x, y in edge)
     for r in range(3, g.h - 1):
         for c in range(1, g.w - 2):
             supported = g.fits(c, r) and g.support(c, r)
             if max_drop > 0 and supported and g.free(c, r) and r + g.y0 < gy:
                 for node, ticks, edge in landing_steps(g, P, c, r, min(max_drop, gy - r - g.y0)):
-                    if price(*node) >= price(c, r):
+                    if price(*node) >= price(c, r) or not unknown_near(*node):
                         continue
                     built_stops.setdefault(node, []).append(((c, r), ticks, edge))
-            if supported and any(T[rr][cc] == -2 for rr in range(r - 3, min(g.h, r + 3))
-                                 for cc in range(c - 1, min(g.w, c + 3))):
-                out.append(((c, r), price(c, r)))
+            if supported and unknown_near(c, r):
+                out.append(((c, r), 0 if search_area is not None else price(c, r)))
             elif (P.ropes and not supported and r + g.y0 < gy and g.free(c, r)
-                  and any(T[rr][cc] == -2 for rr in range(r + 1, min(g.h, r + 3)) for cc in (c, c + 1))):
+                  and unknown_near(c, r)):
                 edges = rope_descents(g, P, c, r, hanging=True)
                 if edges:
                     built_stops.setdefault((c, r), []).extend(edges)
-    out.extend((node, price(*node)) for node in built_stops)
+    out.extend((node, 0 if search_area is not None else price(*node)) for node in built_stops)
     return out, built_stops
 
 
@@ -645,7 +651,11 @@ def preds(g, P, v, into):
                 for k in (-1, 1):
                     u = (c - d, r - k)
                     if g.free(*u):
-                        out.append((u, P.walk * (2 if wet_v or g.wet(*u) else 1), (step_kind, d)))
+                        # On a down-step the head crosses the near column before the body falls.
+                        cost, clearance = g.digs([(col, r - 3)]) if k == 1 else (0, [])
+                        if cost is not None:
+                            edge = ("dig", d, clearance) if clearance else (step_kind, d)
+                            out.append((u, cost + P.walk * (2 if wet_v or g.wet(*u) else 1), edge))
                 if held:
                     continue  # A fall needs a floor. Rope requires a grab.
                 # Off an edge and down to here, with no floor in between.
@@ -673,17 +683,24 @@ def preds(g, P, v, into):
                 if P.hurts(k) and not (g.Wt(c, r) and g.Wt(c, r - 1)):
                     break
                 out.append((u, float(P.fall[k]), ("drop", k)))
-        # the two cells under the feet dug, a fall of one row (a shaft). With one of them already open the character
+        # Dig the floor, then fall to the next supported place. With one column already open the character
         # would stand on one column beside that opening: only when the drop under it is a safe fall (a shaft dug at
         # a deadly cliff's edge had one side open to a 40-row drop and the character slid off it, Oct 20)
-        u = (c, r - 1)
-        if g.fits(*u):
-            ticks, cells = g.digs([(c, r), (c + 1, r)])
-            if cells:
-                opened = [cc for cc in (c, c + 1) if (cc, r) not in cells]
-                safe = all(g.F(cc, r + 1) or any(g.F(cc, y) for y in range(r + 2, r + P.safe + 1)) for cc in opened)
-                if safe:
-                    out.append((u, ticks + P.fall[1], ("dig_down", cells)))
+        for drop in range(1, MAX_FALL + 1):
+            if P.hurts(drop):
+                break
+            row = r - drop + 1
+            ticks, cells = g.digs([(c, row), (c + 1, row)])
+            if ticks is None:
+                break
+            if not cells:
+                continue
+            u = (c, r - drop)
+            opened = [cc for cc in (c, c + 1) if (cc, row) not in cells]
+            safe = all(g.F(cc, r + 1) or any(g.F(cc, y) for y in range(r + 2, u[1] + P.safe + 2)) for cc in opened)
+            if g.fits(*u) and safe:
+                out.append((u, ticks + P.fall[drop], ("dig_down", cells)))
+            break  # Higher floors can be reached through this one; do not skip it.
     if g.hold(c, r) and free_v:
         # on a rope: a climb from the row below or above along it (rule «rope»)
         for k, cost in ((1, P.climb_up), (-1, P.climb_down)):
@@ -988,12 +1005,14 @@ def start_node(cells_of_body):
     return (x0, feet)
 
 
-def plan(cells, goal_cell, body, kit, phys, box=None, version=None, dry=False, keep=(), area=None, approach=False, avoid_submerged=False):
+def plan(cells, goal_cell, body, kit, phys, box=None, version=None, dry=False, keep=(), area=None, approach=False, avoid_submerged=False,
+         search_area=None):
     """The flood for one goal from the map (or a window): a Plan. body: the state's body dict. With dry=True the
     goal is any standing place whose head is out of the water (the breathe goal's: rule «breath»), the nearest by
     ticks, digging and blocks included; goal_cell is then only where the box is centred. With area (c0, r0, c1, r1,
     go's: Nov 1) the goal is any open standing place in it with ground under it (any that digging makes, when none is
-    open); goal_cell is then the place the edge of the seen map is priced toward."""
+    open); goal_cell is then the place the edge of the seen map is priced toward. With search_area, the route ends
+    beside an unknown cell in that patch; actual observations determine search completion."""
     t0 = time.monotonic()
     P = Prices(phys, kit)
     s = start_node(B.cells_of(B.start(body["x"], body["y"])))
@@ -1001,6 +1020,9 @@ def plan(cells, goal_cell, body, kit, phys, box=None, version=None, dry=False, k
     if box is None:
         x0, x1 = min(s[0], gx) - MARGIN_X, max(s[0], gx) + MARGIN_X
         y0, y1 = min(s[1], gy) - MARGIN_Y, max(s[1], gy) + MARGIN_Y
+        if search_area is not None:
+            x0, x1 = min(x0, search_area[0] - 3), max(x1, search_area[2] + 3)
+            y0, y1 = min(y0, search_area[1] - 3), max(y1, search_area[3] + 3)
         box = (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
     g = Grid(cells, *box, P, keep=keep)
     g.start = (s[0] - g.x0, s[1] - g.y0)
@@ -1017,9 +1039,10 @@ def plan(cells, goal_cell, body, kit, phys, box=None, version=None, dry=False, k
     elif approach:
         goals = [(x - g.x0, y - g.y0)
                  for y in range(gy - 4, gy + 5) for x in range(gx - 5, gx + 5)
-                 if g.free(x - g.x0, y - g.y0) and g.support(x - g.x0, y - g.y0)
-                 and Hd.in_reach({"x": x * CELL, "y": (y + 1) * CELL - BH, "w": BW, "h": BH},
-                                 (gx, gy), phys)]
+                 if g.fits(x - g.x0, y - g.y0) and g.support(x - g.x0, y - g.y0)
+                 and Hd.in_reach(body if (x, y) == s else
+                                 {"x": x * CELL, "y": (y + 1) * CELL - BH, "w": BW, "h": BH},
+                                 (gx, gy), phys, kit.get("target_boost", 0))]
     elif area is not None:
         c0, r0, c1, r1 = area
         inside = [(c - g.x0, r - g.y0) for c in range(max(c0, g.x0 + 1), min(c1, g.x0 + g.w - 3) + 1)
@@ -1028,8 +1051,13 @@ def plan(cells, goal_cell, body, kit, phys, box=None, version=None, dry=False, k
                  [n for n in inside if g.fits(*n) and g.support(*n)])
     else:
         goals = [(c - g.x0, gy - g.y0) for c in (gx,) if g.fits(c - g.x0, gy - g.y0)]
-    dist, nxt = flood(g, P, goals, start=g.start, avoid_submerged=avoid_submerged)
-    explore = False
+    if search_area is not None:
+        seeds, built_stops = frontier(g, P, gx, gy, search_area)
+        dist, nxt = flood(g, P, [], start=g.start, seeds=seeds, built_stops=built_stops,
+                          avoid_submerged=avoid_submerged)
+    else:
+        dist, nxt = flood(g, P, goals, start=g.start, avoid_submerged=avoid_submerged)
+    explore = search_area is not None
     near = [(s[0] + dx - g.x0, s[1] + dy - g.y0) for dx, dy in ((0, 0), (-1, 0), (1, 0), (0, 1), (-1, 1), (1, 1))]
     if not dry and not any(n in dist for n in near):
         # the goal is past what the character has seen, or walled off from it on the seen map: the way goes to the
@@ -1100,8 +1128,9 @@ def air_needed(route, body):
     return float("inf") if wet(last) and (route.explore or not way) else longest
 
 
-def breathable_plan(world, target, body, kit, phys, *, area=None, approach=False, keep=(), air_route=None):
-    route = plan(world, target, body, kit, phys, area=area, approach=approach, keep=keep)
+def breathable_plan(world, target, body, kit, phys, *, area=None, approach=False, keep=(), air_route=None,
+                    search_area=None):
+    route = plan(world, target, body, kit, phys, area=area, approach=approach, keep=keep, search_area=search_area)
     if phys.get("gills"):
         return route
     underwater = head_underwater(world, body)
@@ -1109,7 +1138,8 @@ def breathable_plan(world, target, body, kit, phys, *, area=None, approach=False
     if air_needed(route, body) < available and (route.ticks is not None or not underwater):
         return route
     if not underwater:
-        dry_route = plan(world, target, body, kit, phys, area=area, approach=approach, keep=keep, avoid_submerged=True)
+        dry_route = plan(world, target, body, kit, phys, area=area, approach=approach, keep=keep, avoid_submerged=True,
+                         search_area=search_area)
         if dry_route.ticks is not None:
             return dry_route
     return air_route if air_route is not None else plan_to_air(world, body, kit, phys, keep)

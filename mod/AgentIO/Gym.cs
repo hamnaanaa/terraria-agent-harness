@@ -405,6 +405,14 @@ namespace AgentIO
 			if (i < Main.maxNPCs && seed.ValueKind == JsonValueKind.Object)
 			{
 				var n = Main.npc[i];
+				// Recorded variants (for example a green slime) share a type but have their own net ID.
+				if (seed.TryGetProperty("net_id", out var net))
+				{
+					var variant = typeof(NPC).GetMethod("SetDefaultsFromNetId", System.Reflection.BindingFlags.Instance |
+						System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+					if (variant == null) return "cannot restore recorded NPC variant";
+					variant.Invoke(n, variant.GetParameters().Length == 1 ? new object[] { net.GetInt32() } : new object[] { net.GetInt32(), null });
+				}
 				n.position = new Vector2(seed.GetProperty("x").GetSingle(), seed.GetProperty("y").GetSingle());
 				n.velocity = new Vector2(seed.GetProperty("vx").GetSingle(), seed.GetProperty("vy").GetSingle());
 				n.life = System.Math.Clamp(seed.GetProperty("life").GetInt32(), 1, n.lifeMax);
